@@ -74,23 +74,17 @@ void MoonlightVideoDetachPresenter();
 void MoonlightVideoSetSuperResolutionRequested(bool requested);
 bool MoonlightVideoBufferMode();
 
-// HDR: the session asked for a Rec.2020/PQ stream (the colour-space setting), and the host answered
-// on the control stream with whether it actually switched its output to HDR. The answer is the one
-// the toolbar reports and the one the presenter must drive its output stage from - a host that is
-// not in HDR sends an SDR stream whatever was requested, and presenting that on an HDR10 swapchain
-// would shift every colour. `MoonlightVideoHdrActive()` is that answer (false until the host says).
-void MoonlightVideoSetHdrRequested(bool requested);
-// The stream's encoding, from the connection's colour-space / range setting (`COLORSPACE_*` /
+// HDR: the stream's encoding, from the connection's colour-space / range setting (`COLORSPACE_*` /
 // `COLOR_RANGE_*`) and the HDR base transfer (`hdrMode`: 0 = SDR, 1 = HDR10/PQ, 2 = HLG). Rec.2020
 // with hdrMode 2 picks the Rec.2020 HLG description, otherwise Rec.2020 picks the Rec.2020 PQ one;
 // any other colour space is the SDR description whatever hdrMode says. It is what the decoder is told
-// the frames are and what drives the presenter's output stage, so it is set with the same values the
-// session negotiates.
+// the frames are, so it is set with the same values the session negotiates.
 void MoonlightVideoSetStreamColorSpace(int colorSpace, int colorRange, int hdrMode);
-// The host's answer, driven by the control stream's HDR-mode packet (ConnListenerSetHdrMode).
+// The host's answer, driven by the control stream's HDR-mode packet (ConnListenerSetHdrMode). It is
+// the only HDR fact this side has: the picture is presented by the platform's own decode path, so
+// there is nothing of ours for it to drive (see moonlight-video.md §2). `MoonlightVideoHdr()` is the
+// reading the toolbar shows.
 void MoonlightVideoSetHdrMode(bool enabled);
-bool MoonlightVideoHdrActive();
-bool MoonlightVideoHdrRequested();
 
 // 超分: a live surface change (XComponent recreated or a new window bound while the session keeps
 // running). The presenter replaces its swapchain/surface; a null window destroys it. The resize path

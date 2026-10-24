@@ -180,7 +180,7 @@ export class MoonlightStreamConfig implements MoonlightSessionConfig {
   colorRange: number = 0;
   hdrMode: number = 0;
   // HDR 内容的显示亮度（0–100，见 ML_HDR_WHITE_POINT_DEFAULT_PERCENT）：会话页把它交给画面组件的
-  // hdrBrightness（ArkUI 侧生效），不下到原生；只有 hdrMode 非 0 时用得上。
+  // hdrBrightness（ArkUI 侧生效），不下到原生；只有会话真的在放 HDR（主机已确认）时才交给组件，非 HDR 用平台默认。
   hdrWhitePointPercent: number = ML_HDR_WHITE_POINT_DEFAULT_PERCENT;
   encryptionFlags: number = 0;
   remoteInputAesKeyHex: string = '';

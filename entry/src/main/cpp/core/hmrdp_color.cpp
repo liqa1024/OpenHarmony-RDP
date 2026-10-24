@@ -148,29 +148,6 @@ bool SameMatrixAndRange(const ColorDescription& a, const ColorDescription& b) {
   return a.matrix == b.matrix && a.range == b.range;
 }
 
-bool FrameIsHdr(int codecTransfer, bool declaredKnown, const ColorDescription& declared,
-                bool expectedKnown, const ColorDescription& expected) {
-  if (codecTransfer > 0 && codecTransfer != TRANSFER_CHARACTERISTIC_UNSPECIFIED) {
-    return codecTransfer == TRANSFER_CHARACTERISTIC_PQ ||
-           codecTransfer == TRANSFER_CHARACTERISTIC_HLG;
-  }
-  if (declaredKnown) {
-    return declared.IsHdr();
-  }
-  return expectedKnown && expected.IsHdr();
-}
-
-bool FrameIsHlg(int codecTransfer, bool declaredKnown, const ColorDescription& declared,
-                bool expectedKnown, const ColorDescription& expected) {
-  if (codecTransfer > 0 && codecTransfer != TRANSFER_CHARACTERISTIC_UNSPECIFIED) {
-    return codecTransfer == TRANSFER_CHARACTERISTIC_HLG;
-  }
-  if (declaredKnown) {
-    return declared.transfer == Transfer::kHlg;
-  }
-  return expectedKnown && expected.transfer == Transfer::kHlg;
-}
-
 std::string ToString(const ColorDescription& description) {
   return std::string(Name(description.primaries)) + " " + Name(description.range) + " " +
          Name(description.transfer) + " " + Name(description.matrix) + " " +

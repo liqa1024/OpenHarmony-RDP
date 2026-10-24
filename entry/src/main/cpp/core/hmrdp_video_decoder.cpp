@@ -188,13 +188,12 @@ bool VideoDecoder::Start(const std::string& mime, void* window, int width, int h
 }
 
 bool VideoDecoder::StartBuffered(const std::string& mime, int width, int height, int frameRate,
-                                 bool tenBit, const ColorDescription& color, FrameReadyFn onFrame,
+                                 const ColorDescription& color, FrameReadyFn onFrame,
                                  VideoFrameSink* sink) {
   if (sink == nullptr) {
     SetError("buffer mode needs a frame sink");
     return false;
   }
-  tenBit_ = tenBit;
   streamColor_ = color;
   return StartInternal(mime, nullptr, width, height, frameRate, std::move(onFrame), sink);
 }
@@ -262,17 +261,6 @@ bool VideoDecoder::StartInternal(const std::string& mime, void* window, int widt
     HMRDP_LOGW("video decoder: %{public}d fps rejected (%{public}d), configuring without it",
                frameRate, configured);
     configured = ConfigureCodec(width, height, 0);
-  }
-  if (configured != AV_ERR_OK && buffered_ && tenBit_) {
-    // The 10-bit layout is not a promise the platform makes, so a codec that refuses it still gets
-    // the session: it then hands out 8-bit frames, which the import presents as SDR.
-    HMRDP_LOGW("video decoder: 10-bit output rejected (%{public}d), falling back to NV12",
-               configured);
-    tenBit_ = false;
-    configured = ConfigureCodec(width, height, frameRate);
-    if (configured != AV_ERR_OK && frameRate > 0) {
-      configured = ConfigureCodec(width, height, 0);
-    }
   }
   if (configured != AV_ERR_OK) {
     SetError("Configure failed: " + std::to_string(configured));
@@ -343,10 +331,9 @@ int32_t VideoDecoder::ConfigureCodec(int width, int height, int frameRate) {
   OH_AVFormat_SetIntValue(format, OH_MD_KEY_VIDEO_ENABLE_LOW_LATENCY, 1);
   if (buffered_) {
     // Buffer mode: name the channel layout the import addresses byte-wise rather than finding out
-    // afterwards which one the codec picked. An HDR stream asks for the packed 10-bit RGB layout,
-    // the only 10-bit output the platform offers here (see StartBuffered).
-    OH_AVFormat_SetIntValue(format, OH_MD_KEY_PIXEL_FORMAT,
-                            tenBit_ ? AV_PIXEL_FORMAT_RGBA1010102 : AV_PIXEL_FORMAT_NV12);
+    // afterwards which one the codec picked. The 10-bit layouts belong to an HDR stream, which the
+    // platform's own decode path presents instead of this one (see moonlight-video.md §2).
+    OH_AVFormat_SetIntValue(format, OH_MD_KEY_PIXEL_FORMAT, AV_PIXEL_FORMAT_NV12);
   }
   if (frameRate > 0) {
     // The SDK declares the key as double while the decoder examples pass an int; the setter

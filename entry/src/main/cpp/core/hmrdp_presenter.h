@@ -22,29 +22,6 @@ struct PresentRect {
   int height = 0;
 };
 
-// The static metadata (SMPTE 2086 + CTA-861.3) describing the HDR picture this presenter hands to the
-// compositor, in the units the platform takes: chromaticities as x/y, luminances in nits.
-//
-// `valid == false` means the host described nothing usable and the platform gets this build's BT.2020
-// 1000-nit default instead. It matters because the compositor converts the picture to the panel from
-// what it is told about it: the values a host actually sends win when they are usable, and the default
-// is only the fallback (the same default the reference clients inject).
-struct HdrStaticMetadata {
-  bool valid = false;
-  float redX = 0.708f;
-  float redY = 0.292f;
-  float greenX = 0.170f;
-  float greenY = 0.797f;
-  float blueX = 0.131f;
-  float blueY = 0.046f;
-  float whiteX = 0.3127f;
-  float whiteY = 0.3290f;
-  float maxLuminance = 1000.0f;
-  float minLuminance = 0.001f;
-  float maxContentLightLevel = 1000.0f;
-  float maxFrameAverageLightLevel = 400.0f;
-};
-
 class FramePresenter {
  public:
   virtual ~FramePresenter() = default;
@@ -77,30 +54,6 @@ class FramePresenter {
     (void)outputWidth;
     (void)outputHeight;
   }
-
-  // HDR: the HDR base transfer the host confirmed it switched its output to, so the frames handed to
-  // PresentVideo are that encoding: 0 = SDR (Rec.709), 1 = HDR10 (Rec.2020 PQ), 2 = HLG (Rec.2020
-  // ARIB STD-B67). Remembered until the swapchain and the output stage are (re)built, exactly like
-  // SetSuperResolution - the answer usually arrives after this presenter exists. A host that never
-  // reports HDR sends an SDR stream whatever was requested.
-  virtual void SetStreamHdr(int base) { (void)base; }
-  // What the HDR picture is, handed to the swapchain's own metadata (mastering metadata). The host
-  // answers this while the session runs, right before the HDR state, so it is remembered until the
-  // swapchain declaration is (re)written.
-  virtual void SetHdrStaticMetadata(const HdrStaticMetadata& metadata) { (void)metadata; }
-  // The per-frame HDR Vivid metadata the host carries inside a standard HEVC stream (a registered
-  // T.35 SEI), chained into the swapchain metadata so the compositor can tone-map the frame.
-  // `payload` is the de-escaped registered payload, nullptr / 0 clears it (see hmrdp_hdr_dynamic.h).
-  virtual void SetStreamDynamicHdr(const uint8_t* payload, int size) {
-    (void)payload;
-    (void)size;
-  }
-  // Whether the HDR output stage is actually running (the HDR swapchain was built). The toolbar
-  // reports this rather than the request, so a fallback to SDR is never claimed as HDR.
-  virtual bool hdrActive() const { return false; }
-  // Whether the stream really carries HDR Vivid, so the toolbar names the dynamic layer rather than
-  // only the base transfer. Never true while the output stage is not running HDR.
-  virtual bool vividHdrActive() const { return false; }
 
   // Microseconds of the presents since the last call spent blocked on the display (vkAcquireNextImageKHR /
   // eglSwapBuffers); reported as the `presentWait` sub-item, not client work.

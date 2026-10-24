@@ -44,12 +44,13 @@ RDP 侧的存储、显示、超分见 [`settings-and-storage.md`](settings-and-s
   与 `resolveDisplay` / `resolveAdvanced` 并列。
 - 覆盖项：分辨率模式（跟随屏幕 / 固定宽高）、帧率、码率（自动 / 手动）、编码器、色彩协议与HDR
   （Rec601 / Rec709 / Rec2020（HDR）：Rec2020 即请求 10 位 + HDR；这是**协议选择**——只按协议可行性
-  置灰，不按显示能力，显示不了由运行期降级兜底，见 [`moonlight-video.md`](moonlight-video.md) §2/§3）、
+  置灰，不按显示能力，见 [`moonlight-video.md`](moonlight-video.md) §2/§3）、
   HDR 传输（`mlHdrMode`：HDR10 (PQ) / HLG，仅 Rec2020 时出现，驱动 `/launch hdrMode` 与 SDP `dynamicRangeMode`）、
   HDR 亮度上报（峰值 / 全屏平均，各「自动 / 手动」；自动为**连接时**的窗口采样，
   见 [`moonlight-video.md`](moonlight-video.md) §4）、
   HDR 内容亮度（`mlHdrWhitePointPercent`，仅 Rec2020 时出现，默认 100% = 平台默认；**本机**显示 HDR 内容
-  本身的亮度，见 [`moonlight-video.md`](moonlight-video.md) §2）、
+  本身的亮度，且**只在真的在放 HDR 时生效**——会话页按主机已确认的 HDR 状态给值，非 HDR 恒为平台默认 1.0，
+  见 [`moonlight-video.md`](moonlight-video.md) §2）、
   会话缩放（自动 / 手动 / 不额外设置）、超分（沿用 `useGlobalSr` + `sr*`，与 RDP 连接同名字段）。
 - **会话缩放（仅基地版 Sunshine）**：语义与 RDP 的 `DesktopScaleFactor` 同构——把远端 UI 的缩放系数交给主机，
   区别是这里**只写基地版内置的虚拟显示器**（friendly_name `Zako HDR`）：`launch` 成功后 `GET /displays` 找到它，
@@ -139,8 +140,9 @@ RDP 侧的存储、显示、超分见 [`settings-and-storage.md`](settings-and-s
   分辨率 + 缩放 + 超分"，Moonlight 是"光标模式 + 分辨率 + 缩放 + 超分 + 帧率 + 自定义输入 + 码率 + 编码器 +
   色彩协议与HDR + HDR 亮度"。帧率/码率/编码器/色彩协议与HDR/HDR 亮度**不另起「串流」段**：它们和分辨率/缩放同属画面参数，只是 RDP 不暴露。
   **HDR 那三项是条件显示**：只有色彩协议选了 Rec2020（HDR）才出现（非 HDR 时既不显示也不上报）。前两项
-  （峰值 / 全屏平均）是**上报给主机**的亮度；第三项（HDR 内容亮度）是**本机显示 HDR 内容**的亮度，两者
-  互不相干，见 [`moonlight-video.md`](moonlight-video.md) §2/§4。
+  （峰值 / 全屏平均）是**上报给主机**的亮度；第三项（HDR 内容亮度）是**本机显示 HDR 内容**的亮度（且只在该会话
+  真的在放 HDR 时生效，见 [`moonlight-video.md`](moonlight-video.md) §2），两者互不相干，见
+  [`moonlight-video.md`](moonlight-video.md) §2/§4。
   其后是共用节（触控板 / 键盘 / 会话）。这些共用节在两个协议 tab 都出现，**每个协议各存一份值**
   （RDP 用原有设置键，Moonlight 用 `ml*` 副本，如 `mlTouchpadScrollSpeed`）；UI 是同一段代码，靠切换
   数据源复用，切换 tab 时先保存当前 tab 再加载目标 tab。

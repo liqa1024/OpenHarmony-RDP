@@ -486,68 +486,52 @@ bool VkVideoImport::EnsureConvertPipeline() {
 
 namespace {
 
-// The byte layout of one codec buffer, resolved from the allocation's own format - which is the
-// ground truth for the memory - and only falling back to the codec's reported pixel format when the
-// allocation states a format this pipeline does not know. The two can disagree: the platform's HEVC
-// decoder hands out P010 (a 16-bit word per sample) while reporting AV_PIXEL_FORMAT_NV12, and reading
-// that as 8-bit is what garbles the picture.
+// Which way round one interleaved 4:2:0 buffer stores its chroma, resolved from the allocation's own
+// format first - the ground truth for the memory - and from the codec's reported pixel format only
+// when the allocation states a format this importer does not know. `valid` false means neither named
+// a layout it addresses, and the caller says so rather than reading the bytes blind.
 //
-// P010 keeps its 10 bits in the high bits of a little-endian 16-bit word (the DXGI / DRM / Android
-// definition of the format, and the convention the reference's own P010 writer uses - it stores a
-// 10-bit-normalised value into an R16_UNORM plane), so the divisor is 2^(16-10) = 64. The failure mode
-// of the opposite assumption is a near-black picture, not a subtle shift, so a device test decides it
-// outright.
-struct FrameLayout {
+// This is the only degree of freedom left in the layout: the frames the video path imports are 8-bit
+// 4:2:0 (the 10-bit layouts belong to the HDR stream, which the platform's own decode path presents
+// instead - see moonlight-video.md §2).
+struct ChromaOrder {
   bool valid = false;
-  bool packed = false;         // packed RGBA1010102: 4 bytes per pixel, one RGB word, no chroma plane
-  int bytesPerSample = 1;      // 1 for NV12/NV21, 2 for P010
-  int bitDepth = 8;
-  float sampleDivisor = 1.0f;  // P010 keeps its 10 bits MSB-aligned in a 16-bit word: divide by 64
   bool cbFirst = true;
 };
 
-FrameLayout LayoutFromNativeBufferFormat(int format) {
+ChromaOrder OrderFromNativeBufferFormat(int format) {
   switch (format) {
     case NATIVEBUFFER_PIXEL_FMT_YCBCR_420_SP:
-      return FrameLayout{true, false, 1, 8, 1.0f, true};
+      return ChromaOrder{true, true};
     case NATIVEBUFFER_PIXEL_FMT_YCRCB_420_SP:
-      return FrameLayout{true, false, 1, 8, 1.0f, false};
-    case NATIVEBUFFER_PIXEL_FMT_YCBCR_P010:
-      return FrameLayout{true, false, 2, 10, 64.0f, true};
-    case NATIVEBUFFER_PIXEL_FMT_YCRCB_P010:
-      return FrameLayout{true, false, 2, 10, 64.0f, false};
-    case NATIVEBUFFER_PIXEL_FMT_RGBA_1010102:
-      return FrameLayout{true, true, 4, 10, 1.0f, true};
+      return ChromaOrder{true, false};
     default:
-      return FrameLayout{};
+      return ChromaOrder{};
   }
 }
 
-FrameLayout LayoutFromCodecPixelFormat(int pixelFormat) {
+ChromaOrder OrderFromCodecPixelFormat(int pixelFormat) {
   switch (pixelFormat) {
     case AV_PIXEL_FORMAT_NV12:
-      return FrameLayout{true, false, 1, 8, 1.0f, true};
+      return ChromaOrder{true, true};
     case AV_PIXEL_FORMAT_NV21:
-      return FrameLayout{true, false, 1, 8, 1.0f, false};
-    case AV_PIXEL_FORMAT_RGBA1010102:
-      return FrameLayout{true, true, 4, 10, 1.0f, true};
+      return ChromaOrder{true, false};
     default:
-      return FrameLayout{};
+      return ChromaOrder{};
   }
 }
 
-// The YUV -> RGB rows, as `value = cY*sample + cCb*Cb + cCr*Cr + offset` in the frame's own sample
-// word: narrow range expects 16..235 / 16..240 (shifted up for 10-bit), full range the whole word.
-// `kr`/`kb` are the matrix's red/blue luma weights (ITU-T H.273 table 4).
-void BuildRows(float kr, float kb, bool full, int bitDepth, float* out) {
-  const float shift = static_cast<float>(1 << (bitDepth - 8));
-  const float maxValue = static_cast<float>((1 << bitDepth) - 1);
+// The YUV -> RGB rows, as `value = cY*sample + cCb*Cb + cCr*Cr + offset` over 8-bit samples: narrow
+// range expects 16..235 / 16..240, full range the whole 0..255 word. `kr`/`kb` are the matrix's
+// red/blue luma weights (ITU-T H.273 table 4).
+void BuildRows(float kr, float kb, bool full, float* out) {
+  constexpr float kMaxValue = 255.0f;
   const float cCb = 2.0f * (1.0f - kb);
   const float cCr = 2.0f * (1.0f - kr);
-  const float cY = full ? 1.0f : maxValue / (219.0f * shift);
-  const float yOffset = full ? 0.0f : 16.0f * shift;
-  const float chromaOffset = 128.0f * shift;
-  const float scale = full ? 1.0f : maxValue / (224.0f * shift);
+  const float cY = full ? 1.0f : kMaxValue / 219.0f;
+  const float yOffset = full ? 0.0f : 16.0f;
+  const float chromaOffset = 128.0f;
+  const float scale = full ? 1.0f : kMaxValue / 224.0f;
   const float rCb = 0.0f;
   const float rCr = cCr * scale;
   const float gCb = -(kb * cCb * scale) / (1.0f - kr - kb);
@@ -571,17 +555,17 @@ void BuildRows(float kr, float kb, bool full, int bitDepth, float* out) {
 
 // The rows for a description that carries a YUV matrix; false when the samples are already RGB, which
 // this byte converter cannot address as YUV (the caller then keeps the driver's suggestion).
-bool RowsForYuv(const ColorDescription& description, int bitDepth, float* out) {
+bool RowsForYuv(const ColorDescription& description, float* out) {
   const bool full = description.range == ColorDescription::Range::kFull;
   switch (description.matrix) {
     case ColorDescription::Matrix::kBt601:
-      BuildRows(0.299f, 0.114f, full, bitDepth, out);
+      BuildRows(0.299f, 0.114f, full, out);
       return true;
     case ColorDescription::Matrix::kBt709:
-      BuildRows(0.2126f, 0.0722f, full, bitDepth, out);
+      BuildRows(0.2126f, 0.0722f, full, out);
       return true;
     case ColorDescription::Matrix::kBt2020Ncl:
-      BuildRows(0.2627f, 0.0593f, full, bitDepth, out);
+      BuildRows(0.2627f, 0.0593f, full, out);
       return true;
     case ColorDescription::Matrix::kIdentity:
       return false;
@@ -591,12 +575,12 @@ bool RowsForYuv(const ColorDescription& description, int bitDepth, float* out) {
 
 // The driver's own suggestion, used only when the buffer's declaration cannot be expressed as a
 // matrix: model 1 = BT.601, anything else = BT.709; range 0 = full, otherwise limited.
-void RowsForSuggestion(int model, int range, int bitDepth, float* out) {
+void RowsForSuggestion(int model, int range, float* out) {
   const bool full = range == 0;
   if (model == 1) {
-    BuildRows(0.299f, 0.114f, full, bitDepth, out);
+    BuildRows(0.299f, 0.114f, full, out);
   } else {
-    BuildRows(0.2126f, 0.0722f, full, bitDepth, out);
+    BuildRows(0.2126f, 0.0722f, full, out);
   }
 }
 
@@ -609,29 +593,29 @@ void VkVideoImport::SetExpectedColorSpace(int colorSpace) {
   colorMismatch_ = false;
 }
 
-void VkVideoImport::ResolveColorRows(int declaredColorSpace, int bitDepth, int suggestedModel,
+void VkVideoImport::ResolveColorRows(int declaredColorSpace, int suggestedModel,
                                      int suggestedRange, float* out) {
   ColorDescription declared;
-  const bool declaredKnown = TryFromNativeBuffer(declaredColorSpace, bitDepth, &declared);
+  const bool declaredKnown = TryFromNativeBuffer(declaredColorSpace, 8, &declared);
   if (declaredKnown) {
-    if (RowsForYuv(declared, bitDepth, out)) {
+    if (RowsForYuv(declared, out)) {
       return;
     }
     // A declaration with no YUV matrix (an RGB layout) cannot be addressed by this byte converter.
-    RowsForSuggestion(suggestedModel, suggestedRange, bitDepth, out);
+    RowsForSuggestion(suggestedModel, suggestedRange, out);
     return;
   }
   if (declaredColorSpace != OH_COLORSPACE_NONE) {
     // A declaration this importer cannot express: no row set would be honest, so keep the driver's
     // suggestion and let colorMismatch() report the fact.
-    RowsForSuggestion(suggestedModel, suggestedRange, bitDepth, out);
+    RowsForSuggestion(suggestedModel, suggestedRange, out);
     return;
   }
   if (expectedColorSpaceSet_) {
-    if (RowsForYuv(expectedColorSpace_, bitDepth, out)) {
+    if (RowsForYuv(expectedColorSpace_, out)) {
       return;
     }
-    RowsForSuggestion(suggestedModel, suggestedRange, bitDepth, out);
+    RowsForSuggestion(suggestedModel, suggestedRange, out);
     return;
   }
   // The SDR stream contract is Rec.709 limited. An unreported buffer must not fall back to the
@@ -640,7 +624,7 @@ void VkVideoImport::ResolveColorRows(int declaredColorSpace, int bitDepth, int s
     colorFallbackWarned_ = true;
     HMRDP_LOGW("vulkan video import: buffer reports no colour space; assuming BT.709 limited");
   }
-  RowsForYuv(SdrBt709Limited(), bitDepth, out);
+  RowsForYuv(SdrBt709Limited(), out);
 }
 
 bool VkVideoImport::AllocateImportSet(VkImageView view, uint32_t slot, VkDescriptorSet* out) {
@@ -720,35 +704,31 @@ bool VkVideoImport::CreateImported(const void* nativeBuffer, const VideoFrameGeo
   OH_NativeBuffer_Config nativeConfig{};
   OH_NativeBuffer_GetConfig(mutableBuffer, &nativeConfig);
   const int pixelFormat = geometry.pixelFormat;
-  // The allocation's own format is the layout truth; the codec's reported pixel format is only the
-  // fallback (and is what lies when the platform hands out P010 while reporting NV12).
-  FrameLayout layout = LayoutFromNativeBufferFormat(static_cast<int>(nativeConfig.format));
-  if (!layout.valid) {
-    layout = LayoutFromCodecPixelFormat(pixelFormat);
+  // The allocation's own format says which way round the chroma is; the codec's reported pixel format
+  // is only the fallback.
+  ChromaOrder order = OrderFromNativeBufferFormat(static_cast<int>(nativeConfig.format));
+  if (!order.valid) {
+    order = OrderFromCodecPixelFormat(pixelFormat);
   }
-  if (!layout.valid) {
-    // Neither states a layout this importer addresses. Reading it as interleaved 4:2:0 is what the
+  if (!order.valid) {
+    // Neither states a layout this importer addresses. Reading it as interleaved NV12 is what the
     // pipeline did before the allocation's format was consulted, so it is kept as the last resort -
     // but said out loud, because a wrong guess here is a wrong-coloured (or garbled) picture.
     if (!formatWarned_) {
       formatWarned_ = true;
       HMRDP_LOGW("vulkan video import: neither the allocation nor the codec names a known layout "
-                 "(buffer format %{public}d, pixel format %{public}d); assuming 8-bit NV12",
+                 "(buffer format %{public}d, pixel format %{public}d); assuming NV12",
                  static_cast<int>(nativeConfig.format), pixelFormat);
     }
-    layout = FrameLayout{true, false, 1, 8, 1.0f, true};
+    order = ChromaOrder{true, true};
   }
-  const bool packed = layout.packed;
-  const int bytesPerSample = layout.bytesPerSample;
-  const int bytesPerPixel = packed ? 4 : bytesPerSample;
   const int visibleWidth = geometry.visibleWidth > 0 ? geometry.visibleWidth : nativeConfig.width;
   const int visibleHeight =
       geometry.visibleHeight > 0 ? geometry.visibleHeight : nativeConfig.height;
   // The codec's own description of the frame comes first (`stride` in bytes, `sliceHeight` rows per
   // plane: the chroma plane starts at their product). Where it states nothing - an output surface
   // hides the layout behind the allocator - the allocation's config is the only reading left, and its
-  // plane height has to be derived rather than read. A packed layout has no chroma plane, so its
-  // byte image is simply the described row count.
+  // plane height has to be derived rather than read.
   const int bufferStride =
       nativeConfig.stride > nativeConfig.width ? nativeConfig.stride : nativeConfig.width;
   const int stride = geometry.stride > 0 ? geometry.stride : bufferStride;
@@ -765,19 +745,16 @@ bool VkVideoImport::CreateImported(const void* nativeBuffer, const VideoFrameGeo
     error_ = "video buffer geometry is unusable";
     return false;
   }
-  if (!packed && sliceHeight < visibleHeight) {
+  if (sliceHeight < visibleHeight) {
     // The luma plane cannot hold the picture: every byte after it is chroma, not luma.
     error_ = "video plane height " + std::to_string(sliceHeight) + " is below the picture " +
              std::to_string(visibleHeight);
     return false;
   }
-  // The byte image covers the whole allocation; the row pitch is already bytes, so only the packed
-  // layout needs the pixel count converted to a byte count.
-  const uint32_t imageWidth = static_cast<uint32_t>(
-      stride > visibleWidth * bytesPerPixel ? stride : visibleWidth * bytesPerPixel);
-  const uint32_t imageHeight =
-      static_cast<uint32_t>(packed ? (sliceHeight > 0 ? sliceHeight : visibleHeight)
-                                   : sliceHeight + sliceHeight / 2);
+  // The byte image covers the whole allocation; the row pitch is already bytes, and 4:2:0 puts the
+  // half-height chroma plane after the luma plane.
+  const uint32_t imageWidth = static_cast<uint32_t>(stride > visibleWidth ? stride : visibleWidth);
+  const uint32_t imageHeight = static_cast<uint32_t>(sliceHeight + sliceHeight / 2);
   // The byte image covers the whole allocation; if the allocation cannot hold that layout, the
   // description and the buffer disagree and reading it would sample garbage.
   if (properties.allocationSize <
@@ -791,7 +768,7 @@ bool VkVideoImport::CreateImported(const void* nativeBuffer, const VideoFrameGeo
   OH_NativeBuffer_GetColorSpace(mutableBuffer, &colorSpace);
   ColorDescription declared;
   const bool declaredKnown =
-      TryFromNativeBuffer(static_cast<int32_t>(colorSpace), layout.bitDepth, &declared);
+      TryFromNativeBuffer(static_cast<int32_t>(colorSpace), 8, &declared);
   // A buffer stating nothing never contradicts the expectation, and neither does an expectation that
   // was never stated; everything else has to make the same matrix and range decision.
   if (colorSpace != OH_COLORSPACE_NONE && expectedColorSpaceSet_) {
@@ -799,45 +776,30 @@ bool VkVideoImport::CreateImported(const void* nativeBuffer, const VideoFrameGeo
       colorMismatch_ = true;
     }
   }
-  // An HDR frame (a BT.2020 PQ/HLG signal) shown through an SDR picture is the session's degrade: the
-  // convert pass folds it onto SDR, and everything after it stays SDR. HDR is decided from the
-  // codec's own bitstream transfer characteristic first, then the buffer's declaration, then the
-  // expectation (see FrameIsHdr).
-  const bool frameHdr = FrameIsHdr(geometry.transfer, declaredKnown, declared, expectedColorSpaceSet_,
-                                   expectedColorSpace_);
-  out->degrade = frameHdr && pictureFormat_ == kPictureFormat;
-  // Which transfer to fold when degrading (HLG vs PQ); a no-op unless degrade is set.
-  out->hlg = out->degrade && FrameIsHlg(geometry.transfer, declaredKnown, declared,
-                                        expectedColorSpaceSet_, expectedColorSpace_);
   // The buffer's own declaration is what gets rendered (the platform reads the same field); a buffer
   // stating nothing takes the negotiated expectation, and with none either the SDR stream contract
   // (Rec.709 limited) remains the fallback.
   float rows[12] = {};
-  ResolveColorRows(static_cast<int>(colorSpace), layout.bitDepth,
+  ResolveColorRows(static_cast<int>(colorSpace),
                    static_cast<int>(formatProperties.suggestedYcbcrModel),
                    static_cast<int>(formatProperties.suggestedYcbcrRange), rows);
   for (int i = 0; i < 12; ++i) {
     out->colorRows[i] = rows[i];
   }
-  out->cbFirst = layout.cbFirst;
-  out->packed = layout.packed;
-  out->bytesPerSample = layout.bytesPerSample;
-  out->bitDepth = layout.bitDepth;
-  out->sampleDivisor = layout.sampleDivisor;
+  out->cbFirst = order.cbFirst;
   if (!importLogged_) {
     importLogged_ = true;
     HMRDP_LOGI("vulkan video import: %{public}llu bytes, fmt=%{public}d vkfmt=%{public}d "
                "stride=%{public}d cs=%{public}d expected=%{public}s, codec=%{public}d/%{public}d/%{public}d "
-               "layout=%{public}d-bit/%{public}d-byte packed=%{public}d degrade=%{public}d, byte image "
+               "cbFirst=%{public}d, byte image "
                "%{public}ux%{public}u (chroma row %{public}d), visible %{public}dx%{public}d at "
                "%{public}d,%{public}d",
                static_cast<unsigned long long>(properties.allocationSize),
                static_cast<int>(nativeConfig.format), static_cast<int>(formatProperties.format), stride,
                static_cast<int>(colorSpace),
                expectedColorSpaceSet_ ? ToString(expectedColorSpace_).c_str() : "none",
-               geometry.colorPrimaries, geometry.transfer, geometry.matrix, layout.bitDepth,
-               layout.bytesPerSample, layout.packed ? 1 : 0, out->degrade ? 1 : 0, imageWidth,
-               imageHeight, sliceHeight, visibleWidth, visibleHeight, geometry.originX,
+               geometry.colorPrimaries, geometry.transfer, geometry.matrix, out->cbFirst ? 1 : 0,
+               imageWidth, imageHeight, sliceHeight, visibleWidth, visibleHeight, geometry.originX,
                geometry.originY);
   }
 
@@ -992,7 +954,6 @@ bool VkVideoImport::Import(const void* nativeBuffer, const VideoFrameGeometry& g
     return false;
   }
   imports_.push_back(created);
-  tenBitFrames_ = created.bitDepth == 10;
   WriteFrameParams(geometry, created, slot);
   out->image = created.image;
   out->set = created.sets[slot];
@@ -1011,17 +972,10 @@ void VkVideoImport::WriteFrameParams(const VideoFrameGeometry& geometry, const I
   values[3] = static_cast<float>(geometry.originY);
   values[4] = static_cast<float>(frame.chromaRow);
   values[5] = frame.cbFirst ? 1.0f : 0.0f;
-  values[6] = frame.packed ? 1.0f : 0.0f;
-  values[7] = static_cast<float>(frame.bytesPerSample);
+  // 6/7 unused: the block is frame / plane as two vec4s, so the rows begin at the third one.
   for (int i = 0; i < 12; ++i) {
     values[8 + i] = frame.colorRows[i];
   }
-  // The sample word the convert pass normalises by, and the divisor P010's MSB-aligned 10 bits need.
-  values[20] = static_cast<float>((1 << frame.bitDepth) - 1);
-  values[21] = frame.degrade ? 1.0f : 0.0f;
-  values[22] = frame.sampleDivisor;
-  // w flags the HLG fold for the degrade path (see hlgToSdr in video_convert.frag).
-  values[23] = (frame.degrade && frame.hlg) ? 1.0f : 0.0f;
   if (!paramsCoherent_[slot]) {
     VkApi& api = context_.api();
     const VkDevice device = context_.device();

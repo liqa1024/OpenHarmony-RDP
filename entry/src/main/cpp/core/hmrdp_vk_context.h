@@ -57,10 +57,6 @@ struct VkApi {
   PFN_vkGetSwapchainImagesKHR GetSwapchainImagesKHR = nullptr;
   PFN_vkAcquireNextImageKHR AcquireNextImageKHR = nullptr;
   PFN_vkQueuePresentKHR QueuePresentKHR = nullptr;
-  // The HDR channels a self-drawn swapchain uses: VK_EXT_hdr_metadata (static HDR10/HLG metadata,
-  // and the carrier for HUAWEI's Vivid dynamic metadata through VkHdrMetadataEXT.pNext). Null when
-  // the device does not advertise the extension.
-  PFN_vkSetHdrMetadataEXT SetHdrMetadataEXT = nullptr;
   PFN_vkCreateSemaphore CreateSemaphore = nullptr;
   PFN_vkDestroySemaphore DestroySemaphore = nullptr;
   PFN_vkCreateFence CreateFence = nullptr;
@@ -143,11 +139,6 @@ std::string VkResultName(int32_t result);
 // stay colour-agnostic. The transfer function and primaries are the video convert pass's business,
 // because that is the only place an input's colour is known (the gdi desktop is always SDR Rec.709).
 constexpr VkFormat kPictureFormat = VK_FORMAT_B8G8R8A8_UNORM;
-// Rec.2020 PQ, the HDR10 picture an HDR stream's frames are converted into.
-constexpr VkFormat kHdrPictureFormat = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
-
-inline VkFormat PictureFormatFor(bool hdr) { return hdr ? kHdrPictureFormat : kPictureFormat; }
-inline bool IsHdrPictureFormat(VkFormat format) { return format == kHdrPictureFormat; }
 
 // A device-local sampled image plus its memory; false leaves both untouched (freed on the way out).
 bool CreateDeviceImage(VkApi& api, VkDeviceContext& context, VkFormat format, int width, int height,
@@ -177,19 +168,6 @@ struct VulkanCapabilities {
   bool extExternalMemory = false;
   bool extExternalMemoryFd = false;
   bool extOhosExternalMemory = false;
-  // `VK_COLOR_SPACE_HDR10_ST2084_EXT` belongs to this *instance* extension, so an HDR10 swapchain
-  // cannot exist without it (enabled at instance creation, see VkInstanceContext::EnsureInstance).
-  bool extSwapchainColorspace = false;
-  // Whether the device advertises the Vulkan HDR channels a self-drawn swapchain would use instead
-  // of the window-level metadata: VK_EXT_hdr_metadata (static) and VK_HUAWEI_hdr_vivid (HDR Vivid
-  // dynamic). Both are queried because the window channel's effect on a Vulkan-presented image is
-  // unproven, and this decides whether there is an alternative at all.
-  bool extHdrMetadata = false;
-  bool extHdrVivid = false;
-  // `A2B10G10R10_UNORM_PACK32` creatable as a colour attachment: the 10-bit target an HDR10
-  // swapchain needs. The other half of the HDR10 decision (a surface offering that format and the
-  // HDR10 colour space) can only be read with a surface in hand - see SurfaceHdrSupport.
-  bool hdr10AttachmentOk = false;
 
   bool xegLibrary = false;
   bool xegSpatialUpscale = false;
@@ -230,26 +208,6 @@ struct VulkanCapabilities {
 };
 
 const VulkanCapabilities& GetVulkanCapabilities();
-
-// The HDR half of the swapchain decision needs a real surface, so it cannot be answered by the
-// device probe above (which runs before any window exists). Whoever creates the swapchain observes it
-// once per surface and reports it; the swapchain itself then picks its format from it.
-struct SurfaceHdrSupport {
-  bool hdr10FormatOk = false;      // the surface offers A2B10G10R10_UNORM_PACK32
-  bool hdr10ColorSpaceOk = false;  // the surface offers VK_COLOR_SPACE_HDR10_ST2084_EXT
-  bool hlgColorSpaceOk = false;    // the surface offers VK_COLOR_SPACE_HDR10_HLG_EXT
-  uint32_t formatCount = 0;
-  // What the surface actually advertised: "A2B10G10R10_UNORM_PACK32/srgb, ...". Kept as one line so
-  // the HDR readout is a single greppable fact rather than one log per candidate.
-  std::string formats;
-
-  bool hdr10() const { return hdr10FormatOk && hdr10ColorSpaceOk; }
-  // HLG shares the 10-bit attachment; only the colour space differs.
-  bool hlg() const { return hdr10FormatOk && hlgColorSpaceOk; }
-};
-
-SurfaceHdrSupport ObserveSurfaceHdrSupport(VkApi& api, VkPhysicalDevice device,
-                                           VkSurfaceKHR surface);
 
 class VkInstanceContext {
  public:

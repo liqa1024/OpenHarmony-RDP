@@ -53,12 +53,6 @@ struct ColorDescription {
   Range range = Range::kLimited;
   int bitDepth = 8;
 
-  // HDR is the transfer function, not the gamut: BT.2020 carries both SDR and HDR content, and the
-  // only thing that makes a picture HDR is the PQ / HLG curve its values follow.
-  bool IsHdr() const {
-    return transfer == Transfer::kPq || transfer == Transfer::kHlg;
-  }
-
   bool IsRgb() const {
     return matrix == Matrix::kIdentity;
   }
@@ -88,22 +82,8 @@ int32_t ToNativeBuffer(const ColorDescription& description);
 
 // Whether two descriptions make the same *YUV decision*: the same matrix and the same range. Gamut
 // and transfer do not change how samples become RGB, so they are not a mismatch; this is what the
-// negotiated expectation is checked against, and it is the one rule both "does this buffer agree"
-// and the frame-truth / contract reconciliation use.
+// negotiated expectation is checked against.
 bool SameMatrixAndRange(const ColorDescription& a, const ColorDescription& b);
-
-// Whether a decoded frame is HDR, drawn from the sources in order of directness: the codec's own
-// bitstream transfer characteristic (an OH_TransferCharacteristic value; 0 or UNSPECIFIED means it
-// was not reported), then the buffer's declared colour space, then the negotiated expectation. The
-// bitstream description states what the samples actually are, so it wins whenever it is present.
-bool FrameIsHdr(int codecTransfer, bool declaredKnown, const ColorDescription& declared,
-                bool expectedKnown, const ColorDescription& expected);
-
-// Which transfer an HDR frame actually carries, from the same sources and in the same order as
-// FrameIsHdr. Only meaningful once the frame is known to be HDR; it selects the PQ or HLG fold when
-// the output stage has to show an HDR frame as SDR.
-bool FrameIsHlg(int codecTransfer, bool declaredKnown, const ColorDescription& declared,
-                bool expectedKnown, const ColorDescription& expected);
 
 // A stable, log-friendly rendering, e.g. "bt709 limited gamma22 8-bit".
 std::string ToString(const ColorDescription& description);

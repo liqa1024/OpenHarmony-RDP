@@ -108,46 +108,6 @@ std::string DeviceTypeName(uint32_t type) {
   }
 }
 
-// Only the colour spaces this pipeline can act on are named; anything else prints as its raw value,
-// which is still enough to tell what a device advertised.
-std::string ColorSpaceName(VkColorSpaceKHR colorSpace) {
-  switch (colorSpace) {
-    case VK_COLOR_SPACE_SRGB_NONLINEAR_KHR:
-      return "srgb";
-    case VK_COLOR_SPACE_HDR10_ST2084_EXT:
-      return "hdr10";
-    case VK_COLOR_SPACE_HDR10_HLG_EXT:
-      return "hlg";
-    case VK_COLOR_SPACE_DISPLAY_P3_NONLINEAR_EXT:
-      return "p3";
-    case VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT:
-      return "ext-srgb-linear";
-    default:
-      break;
-  }
-  return std::to_string(static_cast<int>(colorSpace));
-}
-
-std::string SurfaceFormatName(VkFormat format) {
-  switch (format) {
-    case VK_FORMAT_UNDEFINED:
-      return "any";
-    case VK_FORMAT_B8G8R8A8_UNORM:
-      return "B8G8R8A8_UNORM";
-    case VK_FORMAT_B8G8R8A8_SRGB:
-      return "B8G8R8A8_SRGB";
-    case VK_FORMAT_R8G8B8A8_UNORM:
-      return "R8G8B8A8_UNORM";
-    case VK_FORMAT_R8G8B8A8_SRGB:
-      return "R8G8B8A8_SRGB";
-    case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
-      return "A2B10G10R10_UNORM_PACK32";
-    default:
-      break;
-  }
-  return "VkFormat(" + std::to_string(static_cast<int>(format)) + ")";
-}
-
 VulkanCapabilities ProbeVulkan() {
   VulkanCapabilities caps;
   VkApi& api = GetVkApi();
@@ -175,7 +135,6 @@ VulkanCapabilities ProbeVulkan() {
     caps.instanceExtensionCount = count;
     caps.extKhrSurface = HasExtension(exts, VK_KHR_SURFACE_EXTENSION_NAME);
     caps.extOhosSurface = HasExtension(exts, VK_OHOS_SURFACE_EXTENSION_NAME);
-    caps.extSwapchainColorspace = HasExtension(exts, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME);
     for (size_t i = 0; i < exts.size(); ++i) {
       if (i != 0) {
         caps.instanceExtensions += ", ";
@@ -248,8 +207,6 @@ VulkanCapabilities ProbeVulkan() {
   caps.extExternalMemory = HasExtension(devExts, VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME);
   caps.extExternalMemoryFd = HasExtension(devExts, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
   caps.extOhosExternalMemory = HasExtension(devExts, VK_OHOS_EXTERNAL_MEMORY_EXTENSION_NAME);
-  caps.extHdrMetadata = HasExtension(devExts, VK_EXT_HDR_METADATA_EXTENSION_NAME);
-  caps.extHdrVivid = HasExtension(devExts, VK_HUAWEI_HDR_VIVID_EXTENSION_NAME);
 
   // The importer addresses the buffer as an R8 linear image; verify the device accepts that shape
   // before advertising the video path (the external-memory import itself still has its own checks).
@@ -259,12 +216,6 @@ VulkanCapabilities ProbeVulkan() {
                                    best, VK_FORMAT_R8_UNORM, VK_IMAGE_TYPE_2D,
                                    VK_IMAGE_TILING_LINEAR, VK_IMAGE_USAGE_SAMPLED_BIT, 0,
                                    &formatProps) == VK_SUCCESS;
-    // The 10-bit target an HDR10 swapchain writes into. A surface could still refuse the format
-    // itself, which is why the surface side is observed separately (ObserveSurfaceHdrSupport).
-    caps.hdr10AttachmentOk = api.GetPhysicalDeviceImageFormatProperties(
-                                 best, VK_FORMAT_A2B10G10R10_UNORM_PACK32, VK_IMAGE_TYPE_2D,
-                                 VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 0,
-                                 &formatProps) == VK_SUCCESS;
   }
 
   // XEngine (超分) is queried through libxengine.so's own enumeration, not the
@@ -327,12 +278,10 @@ VulkanCapabilities ProbeVulkan() {
 
   char summary[256];
   std::snprintf(summary, sizeof(summary),
-                "swapchain=%d timeline=%d extMem=%d extMemFd=%d ohosExtMem=%d xeg=%d "
-                "colorspaceExt=%d hdr10Attach=%d (of %u)",
+                "swapchain=%d timeline=%d extMem=%d extMemFd=%d ohosExtMem=%d xeg=%d (of %u)",
                 caps.extKhrSwapchain ? 1 : 0, caps.extTimelineSemaphore ? 1 : 0,
                 caps.extExternalMemory ? 1 : 0, caps.extExternalMemoryFd ? 1 : 0,
                 caps.extOhosExternalMemory ? 1 : 0, caps.xegSpatialUpscale ? 1 : 0,
-                caps.extSwapchainColorspace ? 1 : 0, caps.hdr10AttachmentOk ? 1 : 0,
                 caps.deviceExtensionCount);
   caps.deviceExtensions = summary;
   return caps;
@@ -394,9 +343,6 @@ bool VkApi::LoadDevice(VkDevice device, VkInstance instance) {
   GetSwapchainImagesKHR = ResolveDevice<PFN_vkGetSwapchainImagesKHR>(gdpa, gipa, device, instance, "vkGetSwapchainImagesKHR");
   AcquireNextImageKHR = ResolveDevice<PFN_vkAcquireNextImageKHR>(gdpa, gipa, device, instance, "vkAcquireNextImageKHR");
   QueuePresentKHR = ResolveDevice<PFN_vkQueuePresentKHR>(gdpa, gipa, device, instance, "vkQueuePresentKHR");
-  // Part of VK_EXT_hdr_metadata; null when the device does not advertise it (the extension is not
-  // enabled here - the entry point only exists on devices that support it).
-  SetHdrMetadataEXT = ResolveDevice<PFN_vkSetHdrMetadataEXT>(gdpa, gipa, device, instance, "vkSetHdrMetadataEXT");
   CreateSemaphore = ResolveDevice<PFN_vkCreateSemaphore>(gdpa, gipa, device, instance, "vkCreateSemaphore");
   DestroySemaphore = ResolveDevice<PFN_vkDestroySemaphore>(gdpa, gipa, device, instance, "vkDestroySemaphore");
   CreateFence = ResolveDevice<PFN_vkCreateFence>(gdpa, gipa, device, instance, "vkCreateFence");
@@ -605,58 +551,9 @@ void FillPresenterVerdict(VulkanCapabilities* caps) {
   HMRDP_LOGI("vulkan verdict: video import=%{public}d (extMem=%{public}d, r8Linear=%{public}d)",
              caps->srVideoImportSupported ? 1 : 0, caps->extOhosExternalMemory ? 1 : 0,
              caps->videoImportFormatOk ? 1 : 0);
-
-  // The device half of the HDR10 swapchain decision (a 10-bit colour attachment and the colour-space
-  // extension that carries the HDR10 colour space). The surface half - a format and a colour space the
-  // window actually offers - can only be read with a surface in hand, and is observed when a swapchain
-  // is created (see SurfaceHdrSupport). The setting itself is not gated on either half: what this
-  // device cannot display is folded onto SDR by the output stage instead.
-  HMRDP_LOGI("vulkan verdict: hdr static: colorspaceExt=%{public}d hdr10Attachment=%{public}d "
-             "extHdrMetadata=%{public}d extHdrVivid=%{public}d",
-             caps->extSwapchainColorspace ? 1 : 0, caps->hdr10AttachmentOk ? 1 : 0,
-             caps->extHdrMetadata ? 1 : 0, caps->extHdrVivid ? 1 : 0);
 }
 
 }  // namespace
-
-SurfaceHdrSupport ObserveSurfaceHdrSupport(VkApi& api, VkPhysicalDevice device,
-                                          VkSurfaceKHR surface) {
-  SurfaceHdrSupport support;
-  if (api.GetPhysicalDeviceSurfaceFormatsKHR == nullptr || device == VK_NULL_HANDLE ||
-      surface == VK_NULL_HANDLE) {
-    return support;
-  }
-  uint32_t count = 0;
-  if (api.GetPhysicalDeviceSurfaceFormatsKHR(device, surface, &count, nullptr) != VK_SUCCESS ||
-      count == 0) {
-    return support;
-  }
-  std::vector<VkSurfaceFormatKHR> formats(count);
-  if (api.GetPhysicalDeviceSurfaceFormatsKHR(device, surface, &count, formats.data()) !=
-      VK_SUCCESS) {
-    return support;
-  }
-  support.formatCount = count;
-  for (const VkSurfaceFormatKHR& format : formats) {
-    if (!support.formats.empty()) {
-      support.formats += ", ";
-    }
-    support.formats += SurfaceFormatName(format.format) + "/" + ColorSpaceName(format.colorSpace);
-    // A lone VK_FORMAT_UNDEFINED entry means "any format": the surface lets the application choose,
-    // so both halves are available by construction.
-    const bool anyFormat = format.format == VK_FORMAT_UNDEFINED;
-    if (anyFormat || format.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32) {
-      if (anyFormat || format.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT) {
-        support.hdr10FormatOk = true;
-        support.hdr10ColorSpaceOk = true;
-      }
-      if (anyFormat || format.colorSpace == VK_COLOR_SPACE_HDR10_HLG_EXT) {
-        support.hlgColorSpaceOk = true;
-      }
-    }
-  }
-  return support;
-}
 
 std::string VulkanCapabilities::Describe() const {
   if (!loaderPresent) {
@@ -695,9 +592,7 @@ std::string VulkanCapabilities::DescribeLines() const {
          " timeline=" + std::string(extTimelineSemaphore ? "1" : "0") +
          " extMemFd=" + std::string(extExternalMemoryFd ? "1" : "0") +
          " OHOS_extMem=" + std::string(extOhosExternalMemory ? "1" : "0") +
-         " xeg=" + std::string(xegSpatialUpscale ? "1" : "0") +
-         " colorspaceExt=" + std::string(extSwapchainColorspace ? "1" : "0") +
-         " hdr10Attach=" + std::string(hdr10AttachmentOk ? "1" : "0") + "\n";
+         " xeg=" + std::string(xegSpatialUpscale ? "1" : "0") + "\n";
   out += "  mem hostVisible=" + std::string(memHostVisible ? "1" : "0") +
          " coherent=" + std::string(memHostCoherent ? "1" : "0") +
          " hostVisDevLocal=" + std::string(memHostVisibleDeviceLocal ? "1" : "0") + "\n";
@@ -756,23 +651,6 @@ bool VkInstanceContext::EnsureInstance() {
 
   std::vector<const char*> enabledExtensions(extensions, extensions + 2);
   // A surface only reports the colour spaces of the instance extensions that are enabled, and
-  // VK_COLOR_SPACE_HDR10_ST2084_EXT belongs to VK_EXT_swapchain_colorspace. Enabling it changes
-  // nothing for an SDR swapchain (the format is picked the same way), but without it an HDR10
-  // surface would look unsupported and the HDR readout would be a false negative.
-  {
-    uint32_t count = 0;
-    if (api.EnumerateInstanceExtensionProperties != nullptr) {
-      api.EnumerateInstanceExtensionProperties(nullptr, &count, nullptr);
-      std::vector<VkExtensionProperties> exts(count);
-      if (count > 0) {
-        api.EnumerateInstanceExtensionProperties(nullptr, &count, exts.data());
-        if (HasExtension(exts, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME)) {
-          enabledExtensions.push_back(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME);
-        }
-      }
-    }
-  }
-
   VkInstanceCreateInfo createInfo{};
   createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
   createInfo.pApplicationInfo = &appInfo;
@@ -962,20 +840,6 @@ bool VkDeviceContext::EnsureDevice(VkSurfaceKHR surface) {
   if (HasExtension(extensions, VK_OHOS_EXTERNAL_MEMORY_EXTENSION_NAME)) {
     enabledExtensions.push_back(VK_OHOS_EXTERNAL_MEMORY_EXTENSION_NAME);
   }
-  // HDR: the two channels a self-drawn swapchain declares its images with. VK_EXT_hdr_metadata is
-  // the static one (HDR10/HLG mastering metadata); VK_HUAWEI_hdr_vivid adds per-frame HDR Vivid
-  // dynamic metadata (chained through VkHdrMetadataEXT.pNext). Each is enabled only when advertised;
-  // the window-level metadata path stays as well, since neither is guaranteed to drive the panel.
-  if (HasExtension(extensions, VK_EXT_HDR_METADATA_EXTENSION_NAME)) {
-    enabledExtensions.push_back(VK_EXT_HDR_METADATA_EXTENSION_NAME);
-  }
-  const bool hasHdrVivid = HasExtension(extensions, VK_HUAWEI_HDR_VIVID_EXTENSION_NAME);
-  VkPhysicalDeviceHdrVividFeaturesHUAWEI hdrVividFeatures{};
-  hdrVividFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HDR_VIVID_FEATURES_HUAWEI;
-  hdrVividFeatures.hdrVivid = VK_TRUE;
-  if (hasHdrVivid) {
-    enabledExtensions.push_back(VK_HUAWEI_HDR_VIVID_EXTENSION_NAME);
-  }
 
   VkDeviceCreateInfo deviceInfo{};
   deviceInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -983,21 +847,9 @@ bool VkDeviceContext::EnsureDevice(VkSurfaceKHR surface) {
   deviceInfo.pQueueCreateInfos = &queueInfo;
   deviceInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size());
   deviceInfo.ppEnabledExtensionNames = enabledExtensions.data();
-  if (hasHdrVivid) {
-    deviceInfo.pNext = &hdrVividFeatures;
-  }
 
   VkDevice device = VK_NULL_HANDLE;
   VkResult result = shared.CreateDevice(physical_, &deviceInfo, nullptr, &device);
-  if (result != VK_SUCCESS && hasHdrVivid) {
-    // The feature may be advertised by the extension but not supported by this device; retry without
-    // it rather than failing the device (a missing Vivid channel only costs the dynamic metadata).
-    HMRDP_LOGW("vulkan: device refused HDR Vivid (hdrVivid feature); disabling it");
-    deviceInfo.pNext = nullptr;
-    enabledExtensions.erase(enabledExtensions.end() - 1);
-    deviceInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size());
-    result = shared.CreateDevice(physical_, &deviceInfo, nullptr, &device);
-  }
   if (result != VK_SUCCESS) {
     error_ = "vkCreateDevice failed: " + VkResultName(result);
     return false;

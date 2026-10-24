@@ -228,7 +228,6 @@ void Run(const MoonlightStreamConfig& config) {
   // The colour-space setting asks for HDR by choosing Rec.2020; the host answers on the control
   // stream (OnHdrMode) and that answer is what the session follows.
   MoonlightVideoSetSuperResolutionRequested(srRequested);
-  MoonlightVideoSetHdrRequested(hdrRequested);
   MoonlightVideoSetStreamColorSpace(config.colorSpace, config.colorRange, config.hdrMode);
   MoonlightVideoAttachPresenter(presenterActive ? presenter.get() : nullptr);
   HMRDP_LOGI("moonlight session %{public}dx%{public}d (presenter %{public}s, super resolution "

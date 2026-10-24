@@ -22,9 +22,10 @@ namespace hmrdp {
 // only falls back to the allocation's config when the codec states nothing, and it refuses a buffer
 // whose allocation cannot hold the layout it just described.
 //
-// The bytes are addressed by the layout the *allocation* declares (1 or 2 bytes per sample, or the
-// packed 10-bit RGB word): the platform's HEVC decoder hands out P010 while reporting NV12, and only
-// the allocation's own format tells the two apart (see ResolveFrameLayout in the .cpp).
+// The bytes are addressed as the interleaved 4:2:0 the codec hands out: luma first, then the
+// half-height chroma plane, and which way round its two samples come is taken from the *allocation*'s
+// own format first (the codec's reported pixel format is only the fallback, see OrderFromNativeBuffer
+// Format in the .cpp).
 //
 // The byte view is what makes the conversion ours: the importer reads the codec's own bytes and the
 // convert pass applies colour-space-correct coefficients, so nothing depends on the driver
@@ -66,10 +67,6 @@ class VkVideoImport {
   // convert pass reads. `slot` is the presenter frame slot whose picture/UBO this frame uses.
   bool Import(const void* nativeBuffer, const VideoFrameGeometry& geometry, uint32_t slot,
               Frame* out);
-
-  // Whether the frames seen so far are the packed 10-bit layout (an HDR stream's frames) rather than
-  // interleaved 8-bit 4:2:0. Only meaningful after the first successful Import.
-  bool tenBitFrames() const { return tenBitFrames_; }
 
   // The colour space the session negotiated with the host for these frames (OH_NativeBuffer_ColorSpace,
   // 0 = not stated). The importer still renders what each buffer itself declares; this is only what that
@@ -122,23 +119,13 @@ class VkVideoImport {
     VkDeviceMemory memory = VK_NULL_HANDLE;
     VkImageView view = VK_NULL_HANDLE;
     VkDescriptorSet sets[kSlots] = {};
-    // The frame's byte layout, resolved from the allocation's own format (see ResolveFrameLayout):
-    // interleaved 4:2:0 (1 byte/sample) or P010 (2 bytes/sample, 10 bits in the high bits of a 16-bit
-    // word), or the packed 10-bit RGB word (no chroma plane, 4 bytes/pixel).
-    bool packed = false;
-    int bytesPerSample = 1;
-    int bitDepth = 8;
-    float sampleDivisor = 1.0f;
-    bool cbFirst = true;
-    int chromaRow = 0;
-    // An HDR frame shown through an SDR picture: the convert pass folds it onto SDR (see the shader's
-    // color.y). Fixed for the import's life, since a picture-format change rebuilds the imports.
-    bool degrade = false;
-    // Set only while degrading: the HDR frame's transfer is HLG, so the convert pass folds HLG
-    // (ARIB STD-B67) instead of PQ. From the same sources as degrade (see FrameIsHlg).
-    bool hlg = false;
-    float colorRows[12] = {};
-  };
+  // The frame's byte layout: the row the interleaved chroma plane starts on, the order its two
+  // samples come in, and the three YUV->RGB rows. The samples are 8-bit; the 10-bit layouts belong to
+  // the HDR stream, which the platform's own decode path presents instead (see moonlight-video.md §2).
+  int chromaRow = 0;
+  bool cbFirst = true;
+  float colorRows[12] = {};
+};
 
   // Bounded so a platform that keeps handing out fresh buffers cannot grow the cache without limit;
   // the caller drains before a miss is served at the cap.
@@ -158,11 +145,9 @@ class VkVideoImport {
   // the negotiated expectation when it states none, and the driver's suggestion only for a
   // declaration this byte importer cannot express. `bitDepth` is the frame's own sample depth (which
   // the coefficients scale for), not the colour space's.
-  void ResolveColorRows(int declaredColorSpace, int bitDepth, int suggestedModel, int suggestedRange,
-                        float* out);
-  // Writes the frame parameters (visible box, crop origin, chroma row, layout, colour rows, sample
-  // word, sample divisor, degrade flag) into the slot's uniform buffer the convert pipeline reads;
-  // std140, six vec4s.
+  void ResolveColorRows(int declaredColorSpace, int suggestedModel, int suggestedRange, float* out);
+  // Writes the frame parameters (visible box, crop origin, chroma row and order, colour rows) into
+  // the slot's uniform buffer the convert pipeline reads; std140, five vec4s.
   void WriteFrameParams(const VideoFrameGeometry& geometry, const Imported& frame, uint32_t slot);
 
   VkDeviceContext& context_;
@@ -189,9 +174,6 @@ class VkVideoImport {
   ColorDescription expectedColorSpace_;
   bool expectedColorSpaceSet_ = false;
   bool colorMismatch_ = false;
-  // Set by the first successful import: whether the frames are 10-bit (P010 or the packed RGBA1010102
-  // word). The caller uses it to check the host's HDR claim against what the codec actually hands out.
-  bool tenBitFrames_ = false;
 
   // One-shot: an import refused every frame would otherwise log at the stream rate, and the imported
   // buffer's shape only needs printing once.
@@ -210,9 +192,8 @@ class VkVideoImport {
   VkPipelineLayout convertPipelineLayout_ = VK_NULL_HANDLE;
   VkDescriptorPool convertPool_ = VK_NULL_HANDLE;
   VkPipeline convertPipeline_ = VK_NULL_HANDLE;
-  // visible/crop origin, chroma row + order, layout flag, the three YUV->RGB rows and the sample
-  // scale: six std140 vec4s.
-  static constexpr size_t kFrameParamsBytes = 6 * 4 * sizeof(float);
+  // visible/crop origin, chroma row + order and the three YUV->RGB rows: five std140 vec4s.
+  static constexpr size_t kFrameParamsBytes = 5 * 4 * sizeof(float);
   VkBuffer paramsBuffer_[kSlots] = {};
   VkDeviceMemory paramsMemory_[kSlots] = {};
   void* paramsMapped_[kSlots] = {};

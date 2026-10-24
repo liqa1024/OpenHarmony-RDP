@@ -2,7 +2,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { common } from '@kit.AbilityKit';
 import { moonlightTelemetry, MoonlightTelemetry,
-  moonlightSessionResizeSurface } from 'libhmrdp.so';
+moonlightVideoHdr, moonlightSessionResizeSurface } from 'libhmrdp.so';
 import { PendingConnection, SessionRequests } from '../model/Connections';
 import { DialogHost } from '../components/DialogHost';
 import { SessionSignal } from '../model/SessionSignal';
@@ -89,9 +89,10 @@ struct MoonlightSessionPage {
   private componentWidth: number = 0;
   private componentHeight: number = 0;
   private streamWidth: number = 1920;
-  // HDR 请求了没有，以及 HDR 内容的显示亮度（`HDR 内容亮度` 设置）。只有 HDR 会话把非默认值交给画面组件
-  // （ArkUI 的组件级 HDR 亮度，见 components/SessionPicture），非 HDR 一律用平台默认值。
-  private hdrRequested: boolean = false;
+  // HDR 内容的显示亮度（`HDR 内容亮度` 设置）：只有**真的在放 HDR 时**才把非默认值交给画面组件
+  // （ArkUI 的组件级 HDR 亮度，见 components/SessionPicture）；非 HDR（含"请求了 HDR 但主机没切"）
+  // 一律用平台默认值，免得把一个 SDR 画面按 HDR 亮度压暗。见 refreshMetrics。
+  @State hdrBrightness: number = 1;
   private hdrWhitePointPercent: number = ML_HDR_WHITE_POINT_DEFAULT_PERCENT;
   private streamHeight: number = 1080;
   private srToken: string = '';
@@ -196,9 +197,9 @@ struct MoonlightSessionPage {
         this.targetFps = config.fps;
         this.targetBitrateKbps = config.bitrateKbps;
         // hdrMode is 0 unless this session asked the host for HDR, so it doubles as the "is this an HDR
-        // session" flag the picture component's brightness setting hangs off.
+        // session" flag that carries the brightness setting; whether HDR is really presented is a
+        // runtime fact it cannot answer (see refreshMetrics).
         if (config.hdrMode > 0) {
-          this.hdrRequested = true;
           this.hdrWhitePointPercent = config.hdrWhitePointPercent;
           hilog.info(DOMAIN, TAG, 'hdr picture brightness %{public}d%%',
             this.hdrWhitePointPercent);
@@ -520,6 +521,10 @@ struct MoonlightSessionPage {
     this.metricsPending = counters.pendingVideoFrames;
     this.metricsDroppedPerSec = counters.droppedPerSec;
     this.metricsLossBp = counters.lossBp;
+    // `HDR 内容亮度` describes HDR content, so it is applied only while the session really presents HDR
+    // (the host's own answer - the same reading the title's HDR tag uses); a session that asked for HDR
+    // but stayed SDR keeps the platform default and is never dimmed by it.
+    this.hdrBrightness = moonlightVideoHdr().length > 0 ? this.hdrWhitePointPercent / 100 : 1;
     this.reportVideoWarning();
     this.reportOverload();
     this.reportRefreshHint(counters);
@@ -926,7 +931,7 @@ struct MoonlightSessionPage {
           pictureController: this.controller,
           contentWidth: this.streamWidth,
           contentHeight: this.streamHeight,
-          hdrBrightness: this.hdrRequested ? this.hdrWhitePointPercent / 100 : 1,
+          hdrBrightness: this.hdrBrightness,
           revealBand: (this.isFullscreen && !this.showToolbar) ? this.revealBand : 0,
           revealBandWidth: this.revealWidthPercent,
           onPointerMouse: (event: MouseEvent) => {

@@ -110,42 +110,20 @@ SDR 会话只有**一条正常链路**：解码交出输出缓冲（buffer 模�
   （因此也不叠超分），由解码器直出会话窗口。这里**完全按平台自己的 HDR Vivid 解码播放方式**做，本仓不在窗口上
   声明任何东西（不设格式 / 色彩空间 / 元数据类型，也不要求解码器"以 surface 为准"）：**帧与元数据都由解码器产出**，
   我们只喂码流、`RenderOutputBuffer` 送显。这是刻意的——只有当我们自己什么都没多说，设备上仍然出现异常，才能
-  把结论落在平台那条路上；我们多说的每一句都会让结论不可归因（见 §3 末尾的闪烁排查）。
-  **以下内容是 buffer 链路的旧 HDR 实现，现已不可达、待移除**（画面与元数据被拆成交换链 + `vkSetHdrMetadataEXT`
-  两条通道，正是要换掉它的原因）：主机确认切到 HDR 后（`ConnListenerSetHdrMode`，见 §3）整条
-  链路换到 **Rec.2020 + HDR 基座传输**（`hdrMode`：`1` = HDR10/PQ，`2` = HLG；见 §4）：解码器申请 10 位输出
-  （`AV_PIXEL_FORMAT_RGBA1010102`），而平台实际交出的是
-  **P010**（`OH_NativeBuffer_Format` = `YCBCR_P010`：10 位 4:2:0、每样点 2 字节、10 位在高位——codec 上报的
-  `OH_AVPixelFormat` 会是 `NV12`，**布局以分配器格式为准**，见 [`present.md`](present.md) §4）；
-  **解码器同时被告知这段流的编码**（`OH_MD_KEY_COLOR_PRIMARIES` / `TRANSFER_CHARACTERISTICS` /
-  `MATRIX_COEFFICIENTS` / `RANGE_FLAG`，H.273 码点：SDR 按协商的 CSC 标 BT.709/BT.601 + gamma22，
-  HDR 标 Rec.2020 NCL + PQ + limited）：这些值以前只是从码流**读回来**做核对，现在是**先声明**——码流 VUI
-  缺失或不对时，声明才是权威口径（平台这几个键的默认是 UNSPECIFIED/limited），这也是两个参考客户端的做法。
-  传入的编码由连接的 `色彩协议与HDR` 决定（`MoonlightVideoSetStreamColorSpace`，与协商的 `colorSpace`/
-  `colorRange` 同源）。
-  picture 与超分输出图取 `kHdrPictureFormat`（`A2B10G10R10_UNORM_PACK32`）、交换链取该格式 + 基座传输的
-  `VK_COLOR_SPACE_HDR10_ST2084_EXT`（PQ）或 `VK_COLOR_SPACE_HDR10_HLG_EXT`（HLG）。HDR 的**完整声明只挂在交换链
-  上**（`ApplySwapchainHdrMetadataLocked`）：色空间由交换链自己的 `VK_COLOR_SPACE_*` 承担（写进图里的是全幅
-  PQ/HLG）；**静态元数据**用 `vkSetHdrMetadataEXT`（`VK_EXT_hdr_metadata`）——主机经 `LiGetHdrMetadata` 下发的
-  值，越界或没有就用本仓默认 BT.2020 1000/0.001/1000/400。**这正是自绘图像被描述的方式**，也是唯一的声明通道
-  （官方《显示规格》即要求"HDR 视频…传递正确的 Metadata 和色域信息"）。
-  **不再对 `OHNativeWindow` 写任何 HDR 属性**（色空间 / gamut / metadata type / 静态 / 动态 / 白点）：那条"窗口
-  通道"是照 surface 链路的参考实现加的，对本仓的 Vulkan 上屏**不生效也不关键**——实测整条删掉后 HDR 显示照常
-  （本该生效的 HDR 亮度白点本来就无效，见下）。别再往窗口上加回声明。
-  **HDR 内容亮度只有一条通道**（设置 `HDR 内容亮度`，0–100%）：ArkUI 的 `XComponent.hdrBrightness`（会话页只在
-  请求了 HDR 的会话上把它交给 `components/SessionPicture`，非 HDR 恒为平台默认 1.0、不动 SDR 的显示）——平台给
-  "组件显示 HDR 内容时的亮度"的正规接口，**实机已验证生效**。`0` = 按 SDR 亮度显示、`1` = 按当前允许的最高
-  HDR 亮度，而 `1.0`/`100%` 就是平台默认值，所以本项的默认值也取 100（等于不动默认观感，需要时才下调）。
-  **它作用于本机显示的 HDR 内容**，与 §4 那组 `/launch` 亮度上报（作用在主机侧）互不相干。实机核对的锚点：
-  `hdr picture brightness N%`。
-  **转换 pass 因此不做色彩变换**：帧的值与 picture 的编码相同（都是 10 位 2020/PQ），片元只做**重新解释**
-  （解出 10 位、丢掉 alpha），PQ↔SDR 那套变换数学一处也不需要。picture 与其编码**绑在一起**，所以
-  `present_quad`、FSR 与 letterbox 一行未改（见 [`present.md`](present.md) §4）。
-- **主机说 HDR 而这一路给不了 HDR10 就是「降级」**：呈现器把 picture 与交换链留在 SDR，convert pass 把这帧
-  （BT.2020/PQ）折到 SDR（PQ→线性→2020→709→203nit 白→sRGB，高光裁剪），会话报 `hdr-degraded`，标题出
-  `HDR降级` + 一次 toast——**画面可用**，不是黑屏，也不把原始值塞进 HDR10 交换链；降级是**正常呈现路径**
-  （不丢帧、不计呈现失败）。触发它的运行期事实有两种：surface 不提供那对 HDR10 格式/色彩空间，或解码器交出的
-  不是 10 位帧。能力判定见 [`present.md`](present.md) §5。
+  把结论落在平台那条路上；我们多说的每一句都会让结论不可归因。（这条取向的由来：HDR10+Vivid 在自建 Vulkan 上屏
+  与这条官方 surface 路上**表现一致地闪烁**，而 HLG+Vivid 正常，源侧内容与动态元数据经离线分析确认平滑且自洽——
+  结论落在平台侧，我们把这一路收回官方做法。）
+  解码器照旧**先声明**这段流的编码（`OH_MD_KEY_COLOR_PRIMARIES` / `TRANSFER_CHARACTERISTICS` /
+  `MATRIX_COEFFICIENTS` / `RANGE_FLAG`，H.273 码点：SDR 按协商的 CSC 标 BT.709/BT.601 + gamma22，HDR 标
+  Rec.2020 NCL + PQ/HLG + limited）——码流 VUI 缺失或不对时，声明才是权威口径（平台这几个键的默认是
+  UNSPECIFIED/limited）。传入的编码由连接的 `色彩协议与HDR` 决定（`MoonlightVideoSetStreamColorSpace`，与协商的
+  `colorSpace`/`colorRange` 同源）。
+  **HDR 内容亮度只有一条通道**（设置 `HDR 内容亮度`，0–100%）：ArkUI 的 `XComponent.hdrBrightness`
+  （平台给"组件显示 HDR 内容时的亮度"的正规接口，**实机已验证生效**）。`0` = 按 SDR 亮度显示、`1` = 按当前允许
+  的最高 HDR 亮度，而 `1.0`/`100%` 就是平台默认值，所以本项的默认值也取 100（等于不动默认观感，需要时才下调）。
+  **它只在真的在放 HDR 时生效**：会话页按 `moonlightVideoHdr()`（主机已确认）给值，非 HDR 恒为平台默认 1.0，
+  所以"请求了 HDR 但主机没切"的 SDR 会话不会被它压暗。**它作用于本机显示的 HDR 内容**，与 §4 那组 `/launch`
+  亮度上报（作用在主机侧）互不相干。实机核对的锚点：`hdr picture brightness N%`。
 - **动态 HDR 只有 HDR Vivid**。这块客户端的定位就是**一块"HDR10 / HLG / HDR Vivid"的显示器**：平台的 HDR 模型
   就是这三种（`OH_NativeBuffer_MetadataType`），没有 HDR10+ 的类型与 API，所以动态层只认 HDR Vivid，
   流的其余内容按底座传输当普通 HDR10 / HLG 放。
@@ -157,14 +135,9 @@ SDR 会话只有**一条正常链路**：解码交出输出缓冲（buffer 模�
   解码回调表里（见 [`moonlight-native.md`](moonlight-native.md) §2），否则整条链路上根本看不到 T.35。
   `core/hmrdp_hdr_dynamic.*` 在每个访问单元里扫出 CUVA（`26 00 04 00 05`）的注册载荷并去 emulation-prevention；
   **只认这一种**——同一个单元里 PQ 流还会带 HDR10+（`B5 00 3C …`），它既不是我们的格式也不是 Vivid 的前缀，
-  所以扫描只挑 CUVA，不受同单元其它载荷的先后影响。解码桥在**变化时**交给呈现器（`SetStreamDynamicHdr`）。
-  **声明只走 Vulkan 这一条通道**——静态元数据用 `vkSetHdrMetadataEXT`（`VK_EXT_hdr_metadata`，挂在 swapchain
-  上，这才是自绘图像被描述的方式），Vivid 的逐帧动态元数据经 `VkHdrVividDynamicMetadataHUAWEI` 链进
-  `VkHdrMetadataEXT.pNext`（`VK_HUAWEI_hdr_vivid`，安卓 PyroWave 用的同一条；**载荷是 CUVA 的
-  `dynamic_metadata()` 正文——去掉 country/provider/oriented 那 5 字节注册头、`system_start_code` 开头**）。
-  设备已报这两个扩展（`extHdrMetadata/extHdrVivid`）。**窗口那套（`OH_HDR_DYNAMIC_METADATA` /
-  `OH_HDR_METADATA_TYPE`）已整条删除**（见上一节）。日志锚点：`moonlight video: HDR Vivid detected` 与
-  `vulkan swapchain: hdr metadata set base=… dynamic=…`。
+  所以扫描只挑 CUVA，不受同单元其它载荷的先后影响。**扫描结果只服务工具栏**（`Hdr()` 把基座传输与动态层拼成
+  `HDR10 Vivid` / `HLG Vivid`）：HDR 由平台的解码路径呈现，动态层由它自己随帧取出，本侧不做任何声明也不转交。
+  日志锚点：`moonlight video: HDR Vivid detected`。
 - **兜底：解码直出 XComponent**。surface 模式（`OH_VideoDecoder_SetSurface(codec, window)`，必须在
   `Prepare` 之前）把解码帧直接写进会话页 XComponent 的 `OHNativeWindow`。应用侧**没有呈现器**、没有 GPU
   合成 pass；留边由**画面组件几何**承担——会话页用 `components/SessionPicture` 把 surface 约束成**流分辨率

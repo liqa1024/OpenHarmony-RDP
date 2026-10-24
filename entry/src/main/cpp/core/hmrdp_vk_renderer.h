@@ -35,11 +35,6 @@ class VkRenderer : public FramePresenter {
   bool superResolutionActive() const override;
   void SetVideoColorSpace(int colorSpace) override;
   bool videoColorMismatch() const override;
-  void SetStreamHdr(int base) override;
-  void SetHdrStaticMetadata(const HdrStaticMetadata& metadata) override;
-  void SetStreamDynamicHdr(const uint8_t* payload, int size) override;
-  bool hdrActive() const override;
-  bool vividHdrActive() const override;
 
   uint8_t* AcquireDesktopBuffer(int width, int height, int* stride) override;
   void BeginDesktopBufferWrite() override;
@@ -60,11 +55,6 @@ class VkRenderer : public FramePresenter {
 
   bool EnsureSwapchainLocked();
   bool CreateSwapchainLocked();
-  // Declares the swapchain's HDR metadata through Vulkan (VK_EXT_hdr_metadata) - the channel a
-  // self-drawn image is described with on this platform, and the only place this app declares its
-  // HDR images. HDR Vivid chains its per-frame dynamic metadata through VkHdrMetadataEXT.pNext.
-  // No-op without the extension or without an HDR output.
-  void ApplySwapchainHdrMetadataLocked();
   void DestroySwapchainLocked();
   void DestroyFrameResourcesLocked();
   bool PresentSolidLocked(uint8_t r, uint8_t g, uint8_t b);
@@ -131,10 +121,6 @@ class VkRenderer : public FramePresenter {
   VkSurfaceKHR surface_ = VK_NULL_HANDLE;
   VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
   VkFormat format_ = VK_FORMAT_UNDEFINED;
-  // What this surface offers for an HDR10 output, observed when the swapchain is created (it needs a
-  // surface, see hmrdp_vk_context.h) and logged once per surface change.
-  SurfaceHdrSupport surfaceHdr_;
-  bool surfaceHdrLogged_ = false;
   VkExtent2D extent_ = {0, 0};
   VkFormat renderPassFormat_ = VK_FORMAT_UNDEFINED;
   VkSampler sampler_ = VK_NULL_HANDLE;
@@ -201,25 +187,9 @@ class VkRenderer : public FramePresenter {
   std::string error_;
   std::string info_;
 
-  // HDR: the HDR base transfer the host confirmed for this stream (see SetStreamHdr): 0 = SDR,
-  // 1 = HDR10 (PQ), 2 = HLG. It decides the swapchain format/colour space and the output stage's
-  // encoding, and is remembered until those are (re)built (see SetStreamHdr).
-  int hdrBase_ = 0;
-  // What the HDR picture is, for the swapchain metadata (see SetHdrStaticMetadata). A
-  // default-constructed value (valid == false) means the swapchain declares this build's BT.2020
-  // 1000-nit fallback.
-  HdrStaticMetadata hdrStaticMetadata_;
-  // The Vivid metadata the stream carries (see SetStreamDynamicHdr): the de-escaped T.35 payload,
-  // chained into the swapchain metadata as the per-frame dynamic layer.
-  bool vividHdr_ = false;
-  std::vector<uint8_t> dynamicHdrPayload_;
-  // One-shot log for the Vulkan swapchain metadata declaration.
-  bool swapchainHdrMetaLogged_ = false;
-  // True while the output stage is really presenting through an HDR10 swapchain; reported by
-  // hdrActive() so a fallback to SDR is never claimed as HDR.
-  bool hdrOutputActive_ = false;
-  // The format the desktop / video pictures and the 超分 output are built in: SDR Rec.709 unless the
-  // host confirmed an HDR stream and this surface could take HDR10 (see UpdatePictureFormatLocked).
+  // The format the desktop / video pictures and the 超分 output are built in. Every picture this
+  // presenter shows is SDR (an HDR session is presented by the platform's own decode path instead,
+  // see moonlight-video.md §2).
   VkFormat pictureFormat_ = kPictureFormat;
 
   bool srRequested_ = false;

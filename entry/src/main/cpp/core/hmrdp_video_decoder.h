@@ -69,12 +69,7 @@ class VideoDecoder {
   // a hand-off thread; the buffer goes back to the codec as soon as the sink returns. At most one
   // picture waits for the hand-off, so an overloaded sink costs the *oldest* frame, not latency
   // growth.
-  //
-  // `tenBit` asks for the packed 10-bit RGB layout (`AV_PIXEL_FORMAT_RGBA1010102`) instead of NV12:
-  // it is the only 10-bit output the platform offers in buffer mode and it is what an HDR stream
-  // needs. A codec that refuses it falls back to NV12, which then carries an 8-bit picture (the
-  // caller reports the resulting SDR output rather than claiming HDR).
-  bool StartBuffered(const std::string& mime, int width, int height, int frameRate, bool tenBit,
+  bool StartBuffered(const std::string& mime, int width, int height, int frameRate,
                      const ColorDescription& color, FrameReadyFn onFrame, VideoFrameSink* sink);
 
   // Feeds one complete access unit (Annex-B, leading start code included): every slice of a picture
@@ -188,8 +183,6 @@ class VideoDecoder {
   // layout the frames are handed off with is written once per stream change, so it lives here too.
   VideoFrameSink* sink_ = nullptr;
   bool buffered_ = false;
-  // Whether the codec was asked for (and took) the packed 10-bit layout; cleared when it refused it.
-  bool tenBit_ = false;
   // The stream's encoding as the session negotiated it, declared to the codec on Configure.
   ColorDescription streamColor_;
   std::thread handOffThread_;
