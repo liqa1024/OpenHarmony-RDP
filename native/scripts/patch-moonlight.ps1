@@ -1,8 +1,8 @@
 # Applies the HmRdp patches to moonlight-common-c: strip -Werror; add the
 # foundation-sunshine local cursor mode (0x5509), native precision touchpad (0x55000009/0x5500000A),
-# clipboard sync (0x5508), the HDR base-transfer field, and SEI preservation (the depacketizer
+# clipboard sync (0x5508), the HDR base-transfer field, SEI preservation (the depacketizer
 # strips SEI NALs by default, which would drop the host's HDR10+ / HDR Vivid T.35 metadata before
-# the decoder bridge can read it).
+# the decoder bridge can read it), and the video resync-request counter the telemetry reports.
 param(
 	[string]$Source = ""
 )
@@ -909,6 +909,69 @@ else {
 
 	[System.IO.File]::WriteAllText($Connection, $cRaw)
 	Write-Host "moonlight: added the video capture hook to Connection.c"
+}
+
+# Recovery observability: the depacketizer asks the host for a keyframe from its own thread, so a
+# network loss leaves no trace in the renderer's counters. Exposed as LiGetIdrRequestCount().
+$hRaw = [System.IO.File]::ReadAllText($Limelight)
+if ($hRaw.Contains("HMRDP_RECSTAT")) {
+	Write-Host "moonlight: Limelight.h resync-counter patch already applied (skipped)"
+}
+else {
+	$heol = if ($hRaw.Contains("`r`n")) { "`r`n" } else { "`n" }
+
+	$anchorStats = "const RTP_VIDEO_STATS* LiGetRTPVideoStats(void);"
+	if (-not $hRaw.Contains($anchorStats)) { throw "moonlight: LiGetRTPVideoStats anchor missing" }
+	$statDecl = @(
+		$anchorStats,
+		"",
+		"// HMRDP_RECSTAT: resync requests this session asked the host for as a keyframe. RFI-driven",
+		"// recovery (the renderer declares it) is deliberately not counted. Reset per connection.",
+		"uint32_t LiGetIdrRequestCount(void);"
+	) -join $heol
+	$hRaw = $hRaw.Replace($anchorStats, $statDecl)
+
+	[System.IO.File]::WriteAllText($Limelight, $hRaw)
+	Write-Host "moonlight: added LiGetIdrRequestCount to Limelight.h"
+}
+
+$cRaw = [System.IO.File]::ReadAllText($ControlStream)
+if ($cRaw.Contains("HMRDP_RECSTAT")) {
+	Write-Host "moonlight: ControlStream.c resync-counter patch already applied (skipped)"
+}
+else {
+	$ceol = if ($cRaw.Contains("`r`n")) { "`r`n" } else { "`n" }
+
+	$anchorThread = "static PLT_THREAD requestIdrFrameThread;"
+	if (-not $cRaw.Contains($anchorThread)) { throw "moonlight: requestIdrFrameThread anchor missing" }
+	$counterDecl = @(
+		$anchorThread,
+		"",
+		"// HMRDP_RECSTAT: see Limelight.h. The IDR request thread is the only writer.",
+		"static volatile uint32_t hmrdpIdrRequests;"
+	) -join $ceol
+	$cRaw = $cRaw.Replace($anchorThread, $counterDecl)
+
+	$anchorStop = "    stopping = false;"
+	if (-not $cRaw.Contains($anchorStop)) { throw "moonlight: control-stream init anchor missing" }
+	$cRaw = $cRaw.Replace($anchorStop, $anchorStop + $ceol + "    hmrdpIdrRequests = 0; // HMRDP_RECSTAT")
+
+	# The definition carries the getter, so the counter and its reader sit together.
+	$anchorRequest = "static void requestIdrFrame(void) {"
+	if (-not $cRaw.Contains($anchorRequest)) { throw "moonlight: requestIdrFrame anchor missing" }
+	$requestPatch = @(
+		"// HMRDP_RECSTAT: see Limelight.h.",
+		"uint32_t LiGetIdrRequestCount(void) {",
+		"    return hmrdpIdrRequests;",
+		"}",
+		"",
+		$anchorRequest,
+		"    hmrdpIdrRequests++; // HMRDP_RECSTAT"
+	) -join $ceol
+	$cRaw = $cRaw.Replace($anchorRequest, $requestPatch)
+
+	[System.IO.File]::WriteAllText($ControlStream, $cRaw)
+	Write-Host "moonlight: added the resync-request counter to ControlStream.c"
 }
 
 Write-Host "=== moonlight-common-c patches applied ==="

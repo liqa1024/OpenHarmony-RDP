@@ -491,6 +491,11 @@ export interface MoonlightTelemetry {
   packetFecFailed: number;
   packetOos: number;
   packetInvalid: number;
+  /**
+   * Keyframe resync requests the host was asked for this session, cumulative (the library resets it
+   * per connection). RFI-driven recovery is deliberately not counted.
+   */
+  idrRequests: number;
 }
 
 /** Raw telemetry sample of the single process-global Moonlight session. */

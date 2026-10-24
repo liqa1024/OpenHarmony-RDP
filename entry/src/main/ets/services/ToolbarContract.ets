@@ -10,6 +10,12 @@ export const TOOLBAR_ZONE_BAR: number = 2;
 // boundary from flipping the form back and forth.
 export const TOOLBAR_SNAP_RATIO: number = 0.95;
 export const TOOLBAR_UNSNAP_RATIO: number = 0.88;
+// Toolbar width follows content, but not every measurement tick: a shrink below
+// this many px is held (a grow always lands, or the text would be clipped), so
+// per-tick text metrics (transfer percent / rate, bandwidth digits) cannot move
+// the pill; a landed change then eases over TOOLBAR_WIDTH_ANIM_MS.
+export const TOOLBAR_WIDTH_DEADBAND: number = 8;
+export const TOOLBAR_WIDTH_ANIM_MS: number = 180;
 
 export const REVEAL_HINT_WIDTH: number = 96;
 export const REVEAL_HINT_HEIGHT: number = 3;

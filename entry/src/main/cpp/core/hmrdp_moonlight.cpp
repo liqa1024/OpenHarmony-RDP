@@ -353,6 +353,8 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     srWarned_ = false;
     colorWarned_ = false;
     presentFailures_ = 0;
+    overBudgetSinceNs_ = 0;
+    lateBacklogLogged_ = false;
     // The library's HDR flag is process-global and survives a session, so a new session starts from
     // "not HDR" and only the host's own report turns it on.
     hdrActive_.store(false);
@@ -407,12 +409,11 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     if (!running_ || decodeUnit == nullptr) {
       return DR_NEED_IDR;
     }
-    // Latency is the budget, not throughput: an access unit that has waited past it is already too
-    // late to show, and leaving it queued would keep every later frame that far behind. Drop the
-    // whole queue and let the library resync on a fresh IDR (it stops delivering frames until one
-    // arrives, so an overload costs exactly one keyframe).
+    // A backlog is not by itself the decoder falling behind: a network burst piles frames up too, and
+    // those frames are still in the reference chain, so giving them up would cost a keyframe for a
+    // delay the display gate already handles (moonlight-video.md §1).
     const int64_t ageUs = decoder_.pendingAgeUs();
-    if (ageUs > decoder_.inputBudgetUs()) {
+    if (BacklogIsLosingGround(ageUs)) {
       const size_t dropped = decoder_.DropPending() + 1;
       statDropped_.fetch_add(dropped, std::memory_order_relaxed);
       // The queue only grows when the decoder is not draining it, and with the gear below the stream
@@ -501,6 +502,32 @@ class MoonlightVideoRenderer : public VideoFrameSink {
   }
 
  private:
+  // True once the backlog has stayed past the input budget for another budget's worth of wall time:
+  // only that is the decoder losing ground (see Submit).
+  bool BacklogIsLosingGround(int64_t ageUs) {
+    if (ageUs <= decoder_.inputBudgetUs()) {
+      overBudgetSinceNs_ = 0;
+      lateBacklogLogged_ = false;
+      return false;
+    }
+    const int64_t nowNs = NowNs();
+    if (overBudgetSinceNs_ == 0) {
+      overBudgetSinceNs_ = nowNs;
+      return false;
+    }
+    if (nowNs - overBudgetSinceNs_ < decoder_.inputBudgetUs() * 1000) {
+      if (!lateBacklogLogged_) {
+        lateBacklogLogged_ = true;
+        HMRDP_LOGI("moonlight video: input %{public}lldms behind budget but still draining; keeping it",
+                   static_cast<long long>(ageUs / 1000));
+      }
+      return false;
+    }
+    overBudgetSinceNs_ = 0;
+    lateBacklogLogged_ = false;
+    return true;
+  }
+
   void ResetStats() {
     statDecoded_.store(0);
     statPresented_.store(0);
@@ -595,6 +622,10 @@ class MoonlightVideoRenderer : public VideoFrameSink {
   bool srWarned_ = false;
   bool colorWarned_ = false;
   int presentFailures_ = 0;
+  // Input budget (BacklogIsLosingGround): when the backlog went past it, 0 while inside; and the
+  // one-shot log flag for a backlog being kept.
+  int64_t overBudgetSinceNs_ = 0;
+  bool lateBacklogLogged_ = false;
   VideoDecoder decoder_;
   std::string mime_;
   std::string codec_;
@@ -668,12 +699,26 @@ int VideoSubmit(PDECODE_UNIT decodeUnit) {
   return MoonlightVideoRenderer::Instance().Submit(decodeUnit);
 }
 
-// CAPABILITY_DIRECT_SUBMIT stays unset, keeping submitDecodeUnit on Moonlight's own decoder thread
-// instead of the RTP receive thread. CAPABILITY_PRESERVE_HEVC_SEI is set so the depacketizer keeps
-// SEI NAL units (HMRDP_SEI): the host carries HDR Vivid as a registered T.35 SEI, and the default
-// behaviour strips it before this bridge could read it.
+// Resolved from the device rather than the negotiated stream: LiStartConnection reads these bits for
+// its SDP before setup() learns the codec, so they cover every codec family this device might use.
+// RFI per family = that family's hardware decoder; DIRECT_SUBMIT stays unset. See moonlight-native.md §2.
+int RecoveryCapabilities() {
+  int capabilities = CAPABILITY_PRESERVE_HEVC_SEI;
+  if (VideoDecoderSupport("video/avc") == DecoderSupport::kHardware) {
+    capabilities |= CAPABILITY_REFERENCE_FRAME_INVALIDATION_AVC;
+  }
+  if (VideoDecoderSupport("video/hevc") == DecoderSupport::kHardware) {
+    capabilities |= CAPABILITY_REFERENCE_FRAME_INVALIDATION_HEVC;
+  }
+  if (VideoDecoderSupport("video/av1") == DecoderSupport::kHardware) {
+    capabilities |= CAPABILITY_REFERENCE_FRAME_INVALIDATION_AV1;
+  }
+  return capabilities;
+}
+
+// Capabilities are filled in here (see RecoveryCapabilities).
 DECODER_RENDERER_CALLBACKS g_videoCallbacks = {
-    VideoSetup, VideoStart, VideoStop, VideoCleanup, VideoSubmit, CAPABILITY_PRESERVE_HEVC_SEI,
+    VideoSetup, VideoStart, VideoStop, VideoCleanup, VideoSubmit, 0,
 };
 
 }  // namespace
@@ -696,6 +741,7 @@ MoonlightTelemetry MoonlightReadTelemetry() {
     telemetry.packetInvalid = stats->packetCountInvalid;
   }
   telemetry.pendingVideoFrames = LiGetPendingVideoFrames();
+  telemetry.idrRequests = LiGetIdrRequestCount();
   return telemetry;
 }
 
@@ -845,6 +891,9 @@ void MoonlightVideoResizeSurface(int width, int height) {
 }
 
 void* MoonlightVideoCallbacks() {
+  g_videoCallbacks.capabilities = RecoveryCapabilities();
+  HMRDP_LOGI("moonlight video: declaring renderer capabilities 0x%{public}x",
+             g_videoCallbacks.capabilities);
   return &g_videoCallbacks;
 }
 

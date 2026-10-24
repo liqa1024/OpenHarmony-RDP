@@ -48,6 +48,9 @@ struct MoonlightTelemetry {
   uint32_t packetFecFailed = 0;
   uint32_t packetOos = 0;
   uint32_t packetInvalid = 0;
+  // Keyframe resync requests the host was asked for this session, cumulative (the library resets it
+  // per connection). RFI-driven recovery is deliberately not counted - see moonlight-session.md §2.
+  uint32_t idrRequests = 0;
 };
 
 MoonlightTelemetry MoonlightReadTelemetry();
@@ -126,6 +129,8 @@ std::string MoonlightVideoHdr();
 
 std::string MoonlightVideoWarning();
 
+// The decoder-renderer callback table, with this device's capability bits resolved into it. Must be
+// taken before LiStartConnection - the library reads the bits there (moonlight-native.md §2).
 void* MoonlightVideoCallbacks();
 
 }

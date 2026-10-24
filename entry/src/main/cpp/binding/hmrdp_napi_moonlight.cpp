@@ -745,6 +745,7 @@ napi_value MoonlightGetTelemetry(napi_env env, napi_callback_info) {
   setInt("packetFecFailed", telemetry.packetFecFailed);
   setInt("packetOos", telemetry.packetOos);
   setInt("packetInvalid", telemetry.packetInvalid);
+  setInt("idrRequests", telemetry.idrRequests);
   return result;
 }
 

@@ -1,14 +1,19 @@
 import { ClipboardButtons, ClipboardTransferStatus, SessionTitle, TelemetryField,
   TelemetryRow, ToolbarChip, ToolbarIconChip } from './SessionChrome';
 import { TOOLBAR_RADIUS, TOOLBAR_ROW_HEIGHT, TOOLBAR_SNAP_RATIO,
-  TOOLBAR_TELEMETRY_HEIGHT, TOOLBAR_UNSNAP_RATIO, TOOLBAR_ZONE_BAR,
+  TOOLBAR_TELEMETRY_HEIGHT, TOOLBAR_UNSNAP_RATIO, TOOLBAR_WIDTH_ANIM_MS,
+  TOOLBAR_WIDTH_DEADBAND, TOOLBAR_ZONE_BAR,
   TOOLBAR_ZONE_NONE } from '../services/ToolbarContract';
 import { lengthToNumber } from '../utils/UiUtil';
 import { MaterialSupport } from '../utils/MaterialSupport';
+import { MOTION_CURVE } from '../utils/UiMotion';
 
 // Both rows carry this on each side; the pill has to add it on top of the
 // measured content width, the bar gets it from its own full width.
 const ROW_SIDE_PAD: number = 16;
+// The pill's own 1px stroke sits inside its width (ArkUI boxes are border-box),
+// so the natural width has to add it back or the content is 2px too tight.
+const PILL_BORDER: number = 1;
 // Smallest breathing room between the title group and the action group; the
 // measured natural width adds it back on top of the two group widths.
 const TITLE_ACTIONS_GAP: number = 24;
@@ -66,7 +71,17 @@ export struct SessionToolbar {
 
   private pushNatural(): void {
     const content: number = this.contentWidth();
-    const natural: number = content > 0 ? content + ROW_SIDE_PAD * 2 : 0;
+    const natural: number = content > 0
+      ? content + (ROW_SIDE_PAD + PILL_BORDER) * 2 : 0;
+    // Content that only lost a digit or two (transfer percent / rate, bandwidth)
+    // must not move the pill: a shrink inside the dead band is held against the
+    // applied width, so repeated small changes cannot make it twitch. A grow
+    // always lands — lagging behind it would clip the text that just grew.
+    if (natural > 0 && this.naturalWidth - natural > 0
+      && this.naturalWidth - natural < TOOLBAR_WIDTH_DEADBAND) {
+      this.updateSnap(this.naturalWidth);
+      return;
+    }
     if (natural !== this.naturalWidth) {
       this.naturalWidth = natural;
     }
@@ -320,6 +335,9 @@ export struct SessionToolbar {
       this.toolbarContent()
     }
     .width(this.pillWidth())
+    // Attribute animation applies to what it follows, so it eases the pill width
+    // (and the row reflow it drags along) without touching the bar form.
+    .animation({ duration: TOOLBAR_WIDTH_ANIM_MS, curve: MOTION_CURVE })
     .alignItems(HorizontalAlign.Start)
     .borderRadius(TOOLBAR_RADIUS)
     .backgroundColor($r('app.color.chrome_bar_bg'))

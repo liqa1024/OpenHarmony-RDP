@@ -145,6 +145,11 @@ struct MoonlightSessionPage {
   @State metricsPending: number = 0;
   @State metricsDroppedPerSec: number = 0;
   @State metricsLossBp: number = -1;
+  // The trail (see MoonlightTelemetry): what the last few seconds contained. Levels are -1 when none.
+  @State metricsTrailRttPeak: number = -1;
+  @State metricsTrailLossPeak: number = -1;
+  @State metricsTrailIdr: number = 0;
+  @State metricsTrailInput: number = 0;
   private fpsNote: string = '';
   private fpsNoteShown: boolean = false;
   private videoWarningShown: boolean = false;
@@ -516,6 +521,10 @@ struct MoonlightSessionPage {
     this.metricsPending = counters.pendingVideoFrames;
     this.metricsDroppedPerSec = counters.droppedPerSec;
     this.metricsLossBp = counters.lossBp;
+    this.metricsTrailRttPeak = counters.trailRttPeakMs;
+    this.metricsTrailLossPeak = counters.trailLossPeakBp;
+    this.metricsTrailIdr = counters.trailIdrRequests;
+    this.metricsTrailInput = counters.trailInputDropped;
     // `HDR 内容亮度` describes HDR content, so it is applied only while the session really presents HDR
     // (the host's own answer - the same reading the title's HDR tag uses); a session that asked for HDR
     // but stayed SDR keeps the platform default and is never dimmed by it.
@@ -654,9 +663,13 @@ struct MoonlightSessionPage {
     fields.push(new TelemetryField(this.gpuLabel(), METRIC_WIDTH_GPU, METRIC_GAP_TIGHT));
     fields.push(new TelemetryField(this.fpsLabel(), this.fpsWidth(), METRIC_GAP_GROUP));
     fields.push(new TelemetryField(this.bitrateLabel(), METRIC_WIDTH_BITRATE, METRIC_GAP_GROUP));
-    const dropped: number = this.sink?.inputDropped() ?? 0;
-    if (dropped > 0) {
-      fields.push(new TelemetryField('输入 ' + dropped, 0, METRIC_GAP_GROUP));
+    const trailInput: number = this.metricsTrailInput;
+    // The trail: empty while nothing happened, so the row reads as always until a loss cost something.
+    if (trailInput > 0) {
+      fields.push(new TelemetryField('输入 ' + trailInput, 0, METRIC_GAP_GROUP));
+    }
+    if (this.metricsTrailIdr > 0) {
+      fields.push(new TelemetryField('补帧 ' + this.metricsTrailIdr, 0, METRIC_GAP_TIGHT));
     }
     return fields;
   }
@@ -678,6 +691,14 @@ struct MoonlightSessionPage {
         0, METRIC_GAP_GROUP));
       fields.push(new TelemetryField('等显示 ' + usToMs(this.metricsPresentWaitUs) + 'ms',
         METRIC_WIDTH_DETAIL, METRIC_GAP_TIGHT));
+    }
+    // The trail's levels; a peak under the colour threshold is not worth a token.
+    if (this.metricsTrailRttPeak >= NETWORK_WARN_MS) {
+      fields.push(new TelemetryField('延迟峰 ' + this.metricsTrailRttPeak + 'ms', 0, METRIC_GAP_GROUP));
+    }
+    if (this.metricsTrailLossPeak > 0) {
+      fields.push(new TelemetryField('丢包峰 ' + (this.metricsTrailLossPeak / 100).toFixed(2) + '%', 0,
+        METRIC_GAP_TIGHT));
     }
     return fields;
   }

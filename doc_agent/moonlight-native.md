@@ -64,10 +64,17 @@ RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md
     选定解码路径。
   - `submitDecodeUnit` 把该回调交来的 **Annex-B 缓冲链**（一帧的全部 NAL，正好等于一个访问单元）拉平后
     交给 `VideoDecoder::Submit`，即 [`moonlight-video.md`](moonlight-video.md) §1 的「一次一个完整访问单元」。
-  - `start`/`stop`/`cleanup` 驱动解码器生命周期。能力位只有 `CAPABILITY_PRESERVE_HEVC_SEI`（`0x80`，
-    本仓补丁新增，见 [`moonlight-video.md`](moonlight-video.md) §2）：**不改写参考帧**，且**不开
-    `CAPABILITY_DIRECT_SUBMIT`**，让提交跑在 moonlight 自己的解码线程上而不是 RTP 接收线程。SEI 位是必须的——
-    common-c 的分包器默认把 SEI NAL 丢掉，而主机的 HDR10+/Vivid 动态元数据正是注册 T.35 SEI。
+  - `start`/`stop`/`cleanup` 驱动解码器生命周期。**不开 `CAPABILITY_DIRECT_SUBMIT`**，让提交跑在 moonlight
+    自己的解码线程上而不是 RTP 接收线程；能力位 = `CAPABILITY_PRESERVE_HEVC_SEI`（`0x80`，本仓补丁新增：
+    common-c 的分包器默认把 SEI NAL 丢掉，而主机的 HDR10+/Vivid 动态元数据正是注册 T.35 SEI）+ **按编码族的
+    RFI 位**（`AVC 0x2` / `HEVC 0x4` / `AV1 0x40`）。
+    - **位必须在 `LiStartConnection` 之前解析**：库在那里面读它（`isReferenceFrameInvalidationSupportedByDecoder()`
+      决定 SDP 的 `maxNumReferenceFrames`），而 `setup`（唯一知道协商编码的地方）在这之后才跑——所以位按
+      **设备**给（该族是否有硬解：那才是会话真正用的解码器），不做协商后的调整。声明的作用、两端生效条件与
+      恢复形状见 [`moonlight-video.md`](moonlight-video.md) §3。
+    - **声明 RFI 是一条约束**：本侧不得改写码流的**参考帧结构**（`num_ref_frames` /
+      `max_dec_frame_buffering`）——改 SEI 载荷（`hmrdp_hdr_dynamic.*`）不属于此列。将来若有人加 SPS 级补丁，
+      必须同时把该位去掉（这正是上游对该位写明的条件）。
   - **两条上屏路线的解码输出模式不同**：直出时解码器用 surface 模式渲染进 `renderContext` 的窗口；超分时用
     buffer 模式把自己的输出缓冲交给桥（桥即 `VideoFrameSink`，在交接锁下调 `PresentVideo`），提交成功拿到
     呈现槽位 token，**最多两帧在飞**，轮到同一槽位前由 `WaitVideoFrame(token)` 等 fence 后才归还解码器
@@ -76,8 +83,9 @@ RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md
     后拆掉；桥只**借用**它（`MoonlightVideoAttachPresenter` / `MoonlightVideoDetachPresenter`，Detach 会等在飞的
     那一帧做完）。表面变化走 `MoonlightSessionSetSurface`（绑定时带真实窗口尺寸）与
     `MoonlightSessionResizeSurface`：前者替换 swapchain/surface（缓冲模式会话存活期间可换），后者只改 extent。
-  - 输入**按延迟预算**排队（时间计量，不是字节）：最老的一帧超过预算就丢掉整段积压并回 `DR_NEED_IDR`
-    请主机补关键帧。依据与限流机制见 [`moonlight-video.md`](moonlight-video.md) §1。
+  - 输入**按延迟预算**排队（时间计量，不是字节）：积压超过预算**再维持一个预算**（= 解码器真在落后，而不是
+    网络把帧挤成一簇）才丢掉整段积压并回 `DR_NEED_IDR` 请主机补关键帧。依据与限流机制见
+    [`moonlight-video.md`](moonlight-video.md) §1。
 - **串流会话桥**：`core/hmrdp_moonlight_session.*` 包住 `LiStartConnection`。**`LiStartConnection` 在建流
   完成后就返回**，会话此后跑在 moonlight 自己的线程上，直到 `LiStopConnection`——所以两者必须**在同一条会话
   线程上成对调用**：会话线程执行 `LiStartConnection` → 等停止/被终止的通知 → 执行 `LiStopConnection`；
@@ -110,7 +118,10 @@ RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md
   延迟预算丢弃、buffer（超分）链路的交接替换与 surface 链路的闸门丢弃；编码载荷字节 Σ`fullLength`、主机帧处理耗时之和 / 帧数、
   本机解码往返之和 / 帧数——最后一项在 `submitDecodeUnit` 记提交时刻、在解码输出回调按 `pts` 配对求差），
   `moonlightTelemetry()` 被调用时再读入瞬时 / 库侧读数（`LiGetEstimatedRttInfo` 的 RTT 与抖动、
-  `LiGetRTPVideoStats` 的包计数、`LiGetPendingVideoFrames`），并在有呈现器时取走本次采样窗口的
+  `LiGetRTPVideoStats` 的包计数、`LiGetPendingVideoFrames`、`LiGetIdrRequestCount` 的**视频重同步
+  请求数**——本仓补丁 `HMRDP_RECSTAT` 新增：解码桥看得见"送进去多少、出来多少、丢了多少"，但库是
+  在自己线程上请主机补关键帧的，只有这个计数能把「网络波动」的代价说成"等了几次关键帧"，见
+  [`moonlight-session.md`](moonlight-session.md) §2 的留痕口径），并在有呈现器时取走本次采样窗口的
   GPU 三段工时与等显示时间（`TakeGpuTimings` / `TakePresentWaitUs`，取走即清零）。**原生不产速率**：
   速率与每帧均值在 ArkTS（`services/MoonlightTelemetry`）按相邻样本差分 / 求均得到（字段与口径见
   [`moonlight-session.md`](moonlight-session.md) §2）。计数在每次会话 `start` 时清零，会话重启后

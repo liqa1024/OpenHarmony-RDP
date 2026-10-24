@@ -11,6 +11,13 @@ const HINT_HALO_RADIUS: number = 4;
 // 10fp step and the pages scale their fixed column widths by the same 10/12.
 export const METRIC_FONT_SIZE: number = 10;
 export const TOOLBAR_CHIP_PAD: number = 10;
+// The transfer line repaints on every chunk, and the rate swings across units
+// (B/s ↔ KB/s ↔ MB/s) while it does: a natural-width rate column would drag the
+// whole pill back and forth. Same fix as the telemetry columns — a fixed width
+// sized for the widest real reading ("119.0MB/s"), right aligned so the unit
+// stays put and only the digits breathe. The column is never dropped, so a
+// blank reading costs nothing either.
+const TRANSFER_SPEED_WIDTH: number = 64;
 
 @Component
 export struct ToolbarChip {
@@ -417,14 +424,17 @@ export struct ClipboardTransferStatus {
           .fontFeature('"tnum" 1')
           .margin({ left: 6 })
           .maxLines(1)
-        if (this.speed.length > 0) {
-          Text(this.speed)
-            .fontSize(12)
-            .fontColor($r('app.color.chrome_text_secondary'))
-            .fontFeature('"tnum" 1')
-            .margin({ left: 6 })
-            .maxLines(1)
-        }
+        // The column stays even when the rate is blank (first tick, a stall, a
+        // tick with no new bytes): dropping it would shrink the group by a whole
+        // column and grow it back on the next tick.
+        Text(this.speed)
+          .fontSize(12)
+          .fontColor($r('app.color.chrome_text_secondary'))
+          .fontFeature('"tnum" 1')
+          .width(TRANSFER_SPEED_WIDTH)
+          .textAlign(TextAlign.End)
+          .margin({ left: 6 })
+          .maxLines(1)
         Progress({ value: this.percent, total: 100, type: ProgressType.Linear })
           .width(140)
           .height(3)
