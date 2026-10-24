@@ -77,6 +77,10 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 [`mo
   部分**才算「屏幕吃不下」，单列为 `refreshDroppedFrames`：判据是共享的 `DisplayBelowFrameRate()`
   （`hmrdp_display_rate.*`），**每个丢弃点各自判一次**，所以它是链无关的那个数。
 
+- **原始串流录制（开发用）**：库内采集钩子（`LiSetVideoCapture`）在每个访问单元交给渲染回调之前把它落盘成
+  `hmrdp_ml.bin`（含 PTS/到达时刻/颜色与 HDR 事实），用于离线分析/复现（如 HDR10 相对 HLG 的亮度闪烁）；
+  采集点、格式与开关见 [`moonlight-native.md`](moonlight-native.md) §2.6。
+
 ## 2. 上屏：默认 buffer 链路 + 兜底 surface
 
 视频只有**一条正常链路**：解码交出输出缓冲（buffer 模式），经 Vulkan 呈现器导入、转成 RGB、上屏；

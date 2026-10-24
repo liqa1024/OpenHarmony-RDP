@@ -110,6 +110,8 @@ export class AppSettings {
   settingsBackgroundImage: string = '';
   appsBackgroundImage: string = '';
   gfxCapture: boolean = false;
+  // Dev-only: capture the raw Moonlight video stream to `<filesDir>/hmrdp_ml.bin` (see setMoonlightStreamCapture).
+  mlStreamCapture: boolean = false;
   mlFps: number = 60;
   mlBitrateAuto: boolean = true;
   mlBitrateKbps: number = ML_BITRATE_DEFAULT_KBPS;
@@ -277,6 +279,8 @@ export class SettingsStore {
       settings.appsBackgroundImage =
         SettingsStore.readString(store, 'appsBackgroundImage', settings.appsBackgroundImage);
       settings.gfxCapture = SettingsStore.readBoolean(store, 'gfxCapture', settings.gfxCapture);
+      settings.mlStreamCapture =
+        SettingsStore.readBoolean(store, 'mlStreamCapture', settings.mlStreamCapture);
       settings.mlFps = SettingsStore.readNumber(store, 'mlFps', settings.mlFps);
       settings.mlBitrateKbps =
         SettingsStore.readNumber(store, 'mlBitrateKbps', settings.mlBitrateKbps);
@@ -407,6 +411,7 @@ export class SettingsStore {
       store.putSync('settingsBackgroundImage', settings.settingsBackgroundImage);
       store.putSync('appsBackgroundImage', settings.appsBackgroundImage);
       store.putSync('gfxCapture', settings.gfxCapture);
+      store.putSync('mlStreamCapture', settings.mlStreamCapture);
       store.putSync('mlFps', settings.mlFps);
       store.putSync('mlBitrateKbps', settings.mlBitrateKbps);
       store.putSync('mlBitrateAuto', settings.mlBitrateAuto);

@@ -14,6 +14,7 @@
 #include <native_buffer/native_buffer.h>
 
 #include "hmrdp_moonlight.h"
+#include "hmrdp_moonlight_capture.h"
 #include "hmrdp_color.h"
 #include "hmrdp_moonlight_audio.h"
 #include "hmrdp_presenter.h"
@@ -298,6 +299,8 @@ void Run(const MoonlightStreamConfig& config) {
     HMRDP_LOGW("moonlight session: LiStartConnection failed (%{public}d)", result);
     Emit(MoonlightSessionEvent::kTerminated, result, "");
   }
+  // The raw stream capture (when enabled) buffers; flush it now that no decode unit can be in flight.
+  MoonlightCaptureFlush();
   // The bridge must stop using the presenter before it is destroyed.
   MoonlightVideoDetachPresenter();
   g_connected = false;

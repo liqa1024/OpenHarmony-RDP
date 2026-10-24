@@ -128,6 +128,7 @@ core/hmrdp_hdr_dynamic.cpp
     core/hmrdp_bitmap.cpp
     core/hmrdp_file_clipboard.cpp
     core/hmrdp_moonlight.cpp
+    core/hmrdp_moonlight_capture.cpp
 core/hmrdp_moonlight_session.cpp
     core/hmrdp_moonlight_audio.cpp
     core/hmrdp_gamepad_kit.cpp

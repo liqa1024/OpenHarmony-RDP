@@ -186,7 +186,6 @@ export const setDisplayRefreshRateHz: (hz: number) => boolean;
 
 /** Dev-only: capture the raw (still ZGX-compressed) GFX stream to `<dir>/hmrdp_gfx.bin`. */
 export const setGfxCapture: (enabled: boolean, dir: string) => boolean;
-
 /** Dev/test: replay a recorded hmrdp_gfx.bin; returns a handle (>0) or -1. `realtime` paces at recorded arrival times; `refMode` 0 off / 1 record / 2 compare. */
 export const startReplay: (surfaceId: string, surfaceW: number, surfaceH: number,
   gfxPath: string, realtime: number, refMode: number) => number;
@@ -332,6 +331,9 @@ export const moonlightSessionStart: (config: MoonlightSessionConfig) => string;
 
 /** Interrupts/stops the session and waits for its thread to finish. */
 export const moonlightSessionStop: () => void;
+
+/** Dev-only: capture the raw Moonlight video access units to `<dir>/hmrdp_ml.bin`. */
+export const moonlightSetStreamCapture: (enabled: boolean, dir: string) => boolean;
 
 export const moonlightSessionActive: () => boolean;
 

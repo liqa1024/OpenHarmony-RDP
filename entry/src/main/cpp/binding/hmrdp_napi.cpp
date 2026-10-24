@@ -1321,6 +1321,8 @@ static napi_value Init(napi_env env, napi_value exports) {
        napi_default, nullptr},
       {"moonlightSessionStop", nullptr, MoonlightSessionStop, nullptr, nullptr, nullptr,
        napi_default, nullptr},
+      {"moonlightSetStreamCapture", nullptr, MoonlightSetStreamCapture, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
       {"moonlightSessionActive", nullptr, MoonlightSessionActive, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"moonlightAudioRead", nullptr, MoonlightAudioRead, nullptr, nullptr, nullptr,

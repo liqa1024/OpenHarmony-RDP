@@ -337,6 +337,8 @@ export class ConfigTransfer {
     settings.developerMode =
       ConfigTransfer.readBoolean(rec, 'developerMode', settings.developerMode);
     settings.gfxCapture = ConfigTransfer.readBoolean(rec, 'gfxCapture', settings.gfxCapture);
+    settings.mlStreamCapture =
+      ConfigTransfer.readBoolean(rec, 'mlStreamCapture', settings.mlStreamCapture);
     settings.materialEnabled =
       ConfigTransfer.readBoolean(rec, 'materialEnabled', settings.materialEnabled);
     settings.materialStyle = Math.min(Math.max(

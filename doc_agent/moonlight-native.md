@@ -260,6 +260,27 @@ RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md
   （平台 Game Controller Kit 带来源的轴事件；无该服务时按同一张官方表读 multimodal 事件）。
 - **验证**：需真手柄（模拟器没有手柄外设），方向/正负属真机判据。
 
+### 2.6 原始串流录制（开发用）
+
+> 视频链路本身见 [`moonlight-video.md`](moonlight-video.md)；这里只记原生侧采集点与落盘。
+
+- **补丁**（`patch-moonlight.ps1`，marker `HMRDP_MLCAP`）：`Limelight.h` 加 `HmrdpVideoCaptureFn` /
+  `LiSetVideoCapture`；`Connection.c` 在每次 `LiStartConnection` 拷出渲染回调之后，把
+  `VideoCallbacks.submitDecodeUnit` 包一层——先调运行期注册的采集回调、再转真实渲染回调。
+  包装点在**库内、任何客户端回调之前**，录到的是主机编码出的完整访问单元（Annex-B），与库自带的
+  `RecorderCallbacks.c`（`LC_DEBUG_RECORD_MODE`）落在同一位置。`VideoCallbacks` 每次建连都从调用方的表
+  `memcpy` 重建，所以包装不会自我嵌套。
+- **采集实现**：`core/hmrdp_moonlight_capture.*`（`MoonlightCaptureConfigure` / `...Flush` / `...Shutdown`）
+  把每个解码单元落盘到 `<filesDir>/hmrdp_ml.bin`。格式 = 8 字节 magic `HMRDML01`（尾字符为版本位），
+  之后每帧一条**定长小端头 + 载荷**：载荷长度(u32)、frameType(u32)、frameNumber(u32)、rtpTimestamp(u32)、
+  frameHostProcessingLatency(u32)、hdrActive(u8)、colorspace(u8)、2 保留字节、receiveTimeUs(u64)、
+  enqueueTimeUs(u64)、presentationTimeUs(u64)、采集时刻(u64)；随后是 `bufferList` 拼起来的原始字节。
+  上限 512MB。采集回调跑在库的解码线程上，**钩子装一次即常驻**（关闭只置空开关，不与解码线程抢函数指针），
+  会话停止时 flush。**录制文件不入库**。
+- **出口**：N-API `moonlightSetStreamCapture(enabled, dir)`；设置项 `mlStreamCapture`（设置页 Moonlight
+  「开发者」区，默认关），在启动时（`EntryAbility`）与开关变更时应用。用于离线分析/复现（如 HDR10 相对
+  HLG 的亮度闪烁），本身**不是**产品功能。
+
 ## 3. 范围
 
 - 本文件覆盖：客户端库的构建与链接（§1）、桥接层与接线（§2，解码桥 + 串流会话桥 + 本地光标模式 + 原生触控板 + 音频 + 剪贴板）。

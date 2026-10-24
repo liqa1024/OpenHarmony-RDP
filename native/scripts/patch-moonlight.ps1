@@ -824,4 +824,91 @@ else {
 	Write-Host "moonlight: gated the SEI strip in VideoDepacketizer.c"
 }
 
+# Raw video capture (dev recording): expose a runtime-registered callback the library invokes with
+# each decode unit right before it hands the unit to the renderer's submitDecodeUnit, so a recording
+# is the complete, decodable Annex-B access unit the host encoded - before any client code sees it.
+# The app registers it before LiStartConnection (mirrors the RDP GFX raw capture hook).
+$Limelight = Join-Path $MlSrc "Limelight.h"
+$Connection = Join-Path $MlSrc "Connection.c"
+if (-not (Test-Path -LiteralPath $Connection)) {
+	throw "moonlight-common-c src missing Connection.c under $MlSrc"
+}
+
+$hRaw = [System.IO.File]::ReadAllText($Limelight)
+if ($hRaw.Contains("HMRDP_MLCAP")) {
+	Write-Host "moonlight: Limelight.h video-capture patch already applied (skipped)"
+}
+else {
+	$heol = if ($hRaw.Contains("`r`n")) { "`r`n" } else { "`n" }
+
+	$anchorSubmit = "typedef int(*DecoderRendererSubmitDecodeUnit)(PDECODE_UNIT decodeUnit);"
+	if (-not $hRaw.Contains($anchorSubmit)) { throw "moonlight: submitDecodeUnit typedef anchor missing" }
+	$decls = @(
+		$anchorSubmit,
+		"",
+		"// HMRDP_MLCAP: dev-only raw video capture. The library calls fn with the decode unit",
+		"// (a PDECODE_UNIT*, valid only for that call) immediately before handing it to the",
+		"// renderer's submitDecodeUnit, so a recording is the complete, decodable access unit.",
+		"typedef void(*HmrdpVideoCaptureFn)(const void* decodeUnit);",
+		"void LiSetVideoCapture(HmrdpVideoCaptureFn fn);"
+	) -join $heol
+	$hRaw = $hRaw.Replace($anchorSubmit, $decls)
+
+	[System.IO.File]::WriteAllText($Limelight, $hRaw)
+	Write-Host "moonlight: added LiSetVideoCapture to Limelight.h"
+}
+
+$cRaw = [System.IO.File]::ReadAllText($Connection)
+if ($cRaw.Contains("HMRDP_MLCAP")) {
+	Write-Host "moonlight: Connection.c video-capture patch already applied (skipped)"
+}
+else {
+	$ceol = if ($cRaw.Contains("`r`n")) { "`r`n" } else { "`n" }
+
+	# The wrapper keeps the real callback and, when one is registered, feeds the capture hook first.
+	$anchorCallbacks = "DECODER_RENDERER_CALLBACKS VideoCallbacks;"
+	if (-not $cRaw.Contains($anchorCallbacks)) { throw "moonlight: VideoCallbacks anchor missing" }
+	$capture = @(
+		$anchorCallbacks,
+		"",
+		"// HMRDP_MLCAP: dev-only raw video capture (see LiSetVideoCapture in Limelight.h).",
+		"static HmrdpVideoCaptureFn g_HmrdpVideoCapture = NULL;",
+		"static int (*g_HmrdpRealVideoSubmit)(PDECODE_UNIT) = NULL;",
+		"",
+		"void LiSetVideoCapture(HmrdpVideoCaptureFn fn) {",
+		"    g_HmrdpVideoCapture = fn;",
+		"}",
+		"",
+		"static int HmrdpVideoSubmitDecodeUnit(PDECODE_UNIT decodeUnit) {",
+		"    if (g_HmrdpVideoCapture != NULL) {",
+		"        g_HmrdpVideoCapture(decodeUnit);",
+		"    }",
+		"    return g_HmrdpRealVideoSubmit(decodeUnit);",
+		"}"
+	) -join $ceol
+	$cRaw = $cRaw.Replace($anchorCallbacks, $capture)
+
+	# VideoCallbacks is re-copied from the caller's table on every LiStartConnection, so wrapping it
+	# here (once per connection) always starts from the real callback and never nests.
+	$anchorRecord = @(
+		"#ifdef LC_DEBUG_RECORD_MODE",
+		"    // Install the pass-through recorder callbacks",
+		"    setRecorderCallbacks(&VideoCallbacks, &AudioCallbacks);",
+		"#endif"
+	) -join $ceol
+	if (-not $cRaw.Contains($anchorRecord)) { throw "moonlight: LC_DEBUG_RECORD_MODE block anchor missing" }
+	$install = @(
+		$anchorRecord,
+		"",
+		"    // HMRDP_MLCAP: wrap the renderer's submitDecodeUnit so the capture hook (when registered)",
+		"    // sees every access unit the library produces, before any client callback runs.",
+		"    g_HmrdpRealVideoSubmit = VideoCallbacks.submitDecodeUnit;",
+		"    VideoCallbacks.submitDecodeUnit = HmrdpVideoSubmitDecodeUnit;"
+	) -join $ceol
+	$cRaw = $cRaw.Replace($anchorRecord, $install)
+
+	[System.IO.File]::WriteAllText($Connection, $cRaw)
+	Write-Host "moonlight: added the video capture hook to Connection.c"
+}
+
 Write-Host "=== moonlight-common-c patches applied ==="

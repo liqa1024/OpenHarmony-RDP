@@ -49,6 +49,7 @@ napi_value MoonlightSessionClearSurface(napi_env env, napi_callback_info info);
 napi_value MoonlightSessionResizeSurface(napi_env env, napi_callback_info info);
 napi_value MoonlightSessionStart(napi_env env, napi_callback_info info);
 napi_value MoonlightSessionStop(napi_env env, napi_callback_info info);
+napi_value MoonlightSetStreamCapture(napi_env env, napi_callback_info info);
 napi_value MoonlightSessionActive(napi_env env, napi_callback_info info);
 napi_value MoonlightAudioRead(napi_env env, napi_callback_info info);
 napi_value MoonlightAudioFormat(napi_env env, napi_callback_info info);

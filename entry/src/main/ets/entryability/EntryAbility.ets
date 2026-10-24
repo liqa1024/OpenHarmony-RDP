@@ -18,6 +18,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { UIContext, window } from '@kit.ArkUI';
 import { AppSettings, SettingsStore } from '../services/SettingsStore';
+import { moonlightSetStreamCapture } from 'libhmrdp.so';
 import { ConnectionStore } from '../services/ConnectionStore';
 import { RdpNative } from '../services/RdpNative';
 import { SessionManager } from '../services/SessionManager';
@@ -68,6 +69,9 @@ export default class EntryAbility extends UIAbility {
     // Configure before any session connects so the RDPGFX stream is captured from
     // the first frame; gated on developer options so a stale value cannot start it.
     RdpNative.applyGfxCapture(settings.developerMode && settings.gfxCapture, this.context.filesDir);
+    // The Moonlight raw stream capture hook is process-global too; install it before any session.
+    moonlightSetStreamCapture(settings.developerMode && settings.mlStreamCapture,
+      this.context.filesDir);
     WindowController.applyMainWindowSize(settings.mainWindowWidth, settings.mainWindowHeight,
       settings.mainWindowSizeEnabled);
 

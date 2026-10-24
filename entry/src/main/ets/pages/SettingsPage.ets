@@ -13,6 +13,7 @@ import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer
 import { BackgroundImage } from '../services/BackgroundImage';
 import { Capability, CODEC_SUPPORT_NONE, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { RdpNative } from '../services/RdpNative';
+import { moonlightSetStreamCapture } from 'libhmrdp.so';
 import { AppSettings, DEFAULT_MATERIAL_ENABLED, DEFAULT_PINCH_TOUCH_DISTANCE,
   DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT,
   DEFAULT_TOOLBAR_WIDTH_PERCENT,
@@ -143,6 +144,7 @@ struct SettingsPage {
   private mlSrReason: string = '';
   @State developerMode: boolean = false;
   @State gfxCapture: boolean = false;
+  @State mlStreamCapture: boolean = false;
   @State materialEnabled: boolean = DEFAULT_MATERIAL_ENABLED;
   @State materialStyle: number = MATERIAL_STYLE_DEFAULT;
   @State materialSupported: boolean = false;
@@ -326,10 +328,11 @@ struct SettingsPage {
         this.persistNow();
       }
     }
-    if (!this.developerMode && settings.gfxCapture) {
+    if (!this.developerMode && (settings.gfxCapture || settings.mlStreamCapture)) {
       this.persistNow();
     }
     this.applyGfxCaptureSetting();
+    this.applyMlStreamCaptureSetting();
   }
 
   private applyWindowSettings(settings: AppSettings): void {
@@ -347,6 +350,7 @@ struct SettingsPage {
   private applyDeveloperSettings(settings: AppSettings): void {
     this.developerMode = settings.developerMode;
     this.gfxCapture = this.developerMode ? settings.gfxCapture : false;
+    this.mlStreamCapture = this.developerMode ? settings.mlStreamCapture : false;
     this.touchHighRate = settings.touchHighRate;
     this.scrollEngineFallback = settings.scrollEngineFallback;
     this.hoverDelay = settings.toolbarHoverDelay;
@@ -387,6 +391,19 @@ struct SettingsPage {
       dir = '';
     }
     RdpNative.applyGfxCapture(this.gfxCapture, dir);
+  }
+
+  private applyMlStreamCaptureSetting(): void {
+    let dir: string = '';
+    try {
+      const ctx: common.Context | undefined = this.getUIContext().getHostContext();
+      if (ctx !== undefined) {
+        dir = ctx.filesDir;
+      }
+    } catch (error) {
+      dir = '';
+    }
+    moonlightSetStreamCapture(this.mlStreamCapture, dir);
   }
 
   private sizeText(value: number): string {
@@ -549,6 +566,7 @@ struct SettingsPage {
     settings.settingsBackgroundImage = this.settingsWallpaperPath;
     settings.appsBackgroundImage = this.appsWallpaperPath;
     settings.gfxCapture = this.gfxCapture;
+    settings.mlStreamCapture = this.mlStreamCapture;
     settings.touchHighRate = this.touchHighRate;
     settings.scrollEngineFallback = this.scrollEngineFallback;
     settings.toolbarHoverDelay = this.hoverDelay;
@@ -2675,6 +2693,24 @@ struct SettingsPage {
             }
             }
 
+            if (this.protocol === PROTOCOL_MOONLIGHT && this.developerMode) {
+            FormSection({ title: '开发者' }) {
+
+            this.toggleItem({
+              title: '抓取串流码流（测试）',
+              subtitle: '录制 Moonlight 原始串流到 hmrdp_ml.bin',
+              value: this.mlStreamCapture,
+              enabled: true,
+              disabledReason: '',
+              onChange: (v: boolean) => {
+                this.mlStreamCapture = v;
+                this.persistNow();
+                this.applyMlStreamCaptureSetting();
+              }
+            })
+            }
+            }
+
             if (this.protocol === TAB_COMMON) {
             FormSection({ title: '开发者' }) {
 
@@ -2686,10 +2722,16 @@ struct SettingsPage {
               disabledReason: '',
               onChange: (v: boolean) => {
                 this.developerMode = v;
-                if (!v && this.gfxCapture) {
-                  this.gfxCapture = false;
+                if (!v && (this.gfxCapture || this.mlStreamCapture)) {
+                  if (this.gfxCapture) {
+                    this.gfxCapture = false;
+                    this.applyGfxCaptureSetting();
+                  }
+                  if (this.mlStreamCapture) {
+                    this.mlStreamCapture = false;
+                    this.applyMlStreamCaptureSetting();
+                  }
                   this.persistNow();
-                  this.applyGfxCaptureSetting();
                 } else {
                   this.persistNow();
                 }
