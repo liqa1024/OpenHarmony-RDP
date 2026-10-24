@@ -32,9 +32,11 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 [`mo
   桌面链路（RDP）在同一判据下的处置是**合并**而不是等待，见 [`rdp-present.md`](rdp-present.md) §3。
   兜底的 surface 链路（见 §2）没有可等待的线程，因此维持"太早就释放"的硬丢。
 - **模式只按能力定、运行期只报错**：会话开始时问一次 `FramePresenter::supportsVideo()`（呈现判定 + 视频
-  导入判定），成立就走默认 buffer 链路，否则静默回退到 surface 兜底。**输出模式不能中途切换**（换模式要
-  重建解码器，见 [`present.md`](present.md) §1），所以运行期呈现器一旦持续拒绝帧（导入失败、缓冲布局或
-  像素格式读不出来、fence 超时）就是**黑屏**：连续 4 次即确认，报 `video-present`，会话页以**可停留的
+  导入判定），成立就走默认 buffer 链路，否则静默回退到 surface 兜底。**请求 HDR 的会话一律走 surface**
+  （平台的标准 HDR 路，见 §2），不进这条判定，也不叠超分。**输出模式不能中途切换**（换模式要
+  重建解码器，见 [`present.md`](present.md) §1），所以运行期一旦持续拒绝帧（buffer 路：导入失败、缓冲布局或
+  像素格式读不出来、fence 超时；surface 路：输出表面连续拒绝渲染）就是**黑屏**：连续 4 次即确认，报
+  `video-present`，会话页以**可停留的
   Notice** 告知（关键错误不能只靠 Toast，见 [`ui-feedback.md`](ui-feedback.md) §1.5），文案指向"换编码或
   降低分辨率重连"，不再指向超分。
 - **硬解优先，软解兜底，无解器报错**：`VideoDecoderSupport()`（`OH_AVCodec_GetCapabilityByCategory`）把每种
@@ -83,10 +85,11 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 [`mo
 
 ## 2. 上屏：默认 buffer 链路 + 兜底 surface
 
-视频只有**一条正常链路**：解码交出输出缓冲（buffer 模式），经 Vulkan 呈现器导入、转成 RGB、上屏；
-超分只是这条链路上的一个可选段。解码器自带的输出表面（surface 模式）保留为**兜底**，只在呈现器不能导入
-缓冲时启用——与 RDP 的 GLES 兜底同级：静默回退、不参与送显节拍（判槽即丢），实际只有模拟器会走到。
-**模式在会话开始时按能力一次性判定，运行期不可切换**（换模式要重建解码器），所以运行期"这帧呈现不了"
+SDR 会话只有**一条正常链路**：解码交出输出缓冲（buffer 模式），经 Vulkan 呈现器导入、转成 RGB、上屏；
+超分只是这条链路上的一个可选段。解码器自带的输出表面（surface 模式）承担两件事：**请求 HDR 的会话的标准
+路径**（平台文档的 HDR Vivid 播放方式，画面与元数据由平台一并处理，见本节末），以及**兜底**——呈现器不能
+导入缓冲时（与 RDP 的 GLES 兜底同级：静默回退、不参与送显节拍，判槽即丢）。
+**模式在会话开始时一次性判定，运行期不可切换**（换模式要重建解码器），所以运行期"这帧呈现不了"
 只能报错、不能改走另一条路（见 §1 末两条）。
 
 - **默认：解码走 buffer 模式 + Vulkan 导入，复用 RDP 呈现器**。会话按**输出分辨率 ÷ 倍率**取流
@@ -103,7 +106,13 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 [`mo
   会话把协商的 CSC 交给呈现器（`SetVideoColorSpace`）做核对，不一致报 `color-mismatch`。
   此链路**只在真机验证**（Vulkan 呈现本就真机），且要求设备支持视频导入（见 [`present.md`](present.md) §5）；
   不满足时走下面这条兜底。
-- **HDR 是这条链路的一种编码，不是第二条链路**。主机确认切到 HDR 后（`ConnListenerSetHdrMode`，见 §3）整条
+- **HDR 走解码 surface，不走这条 buffer 链路**。请求 HDR（`colorSpace == Rec2020`）的会话**不建 presenter**
+  （因此也不叠超分），由解码器直出会话窗口。这里**完全按平台自己的 HDR Vivid 解码播放方式**做，本仓不在窗口上
+  声明任何东西（不设格式 / 色彩空间 / 元数据类型，也不要求解码器"以 surface 为准"）：**帧与元数据都由解码器产出**，
+  我们只喂码流、`RenderOutputBuffer` 送显。这是刻意的——只有当我们自己什么都没多说，设备上仍然出现异常，才能
+  把结论落在平台那条路上；我们多说的每一句都会让结论不可归因（见 §3 末尾的闪烁排查）。
+  **以下内容是 buffer 链路的旧 HDR 实现，现已不可达、待移除**（画面与元数据被拆成交换链 + `vkSetHdrMetadataEXT`
+  两条通道，正是要换掉它的原因）：主机确认切到 HDR 后（`ConnListenerSetHdrMode`，见 §3）整条
   链路换到 **Rec.2020 + HDR 基座传输**（`hdrMode`：`1` = HDR10/PQ，`2` = HLG；见 §4）：解码器申请 10 位输出
   （`AV_PIXEL_FORMAT_RGBA1010102`），而平台实际交出的是
   **P010**（`OH_NativeBuffer_Format` = `YCBCR_P010`：10 位 4:2:0、每样点 2 字节、10 位在高位——codec 上报的
@@ -193,12 +202,14 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 [`mo
 
 协商结果只有软解时以 `software-decode|<mime>` 警告（提示主机换编码器）；运行期另有 `sr-unavailable`
 （会话请求了超分但没有可用呈现器）、`sr-inactive`（呈现器在跑但上采样未生效）、`video-present`
-（呈现器连续拒绝帧 ⇒ **确认黑屏**，见 §1）、`hdr-degraded`（主机在 HDR 而本机输出级没跑 HDR，已折到 SDR，见 §2）与
+（连续拒绝帧 ⇒ **确认黑屏**：buffer 路由呈现器报告，surface 路由解码器连续被拒的渲染报告，见 §1）与
 `color-mismatch`（解码缓冲声明的色彩空间与协商的 CSC 不同族或不同范围，见 [`present.md`](present.md) §4）
-五种警告，多个事实以逗号分隔。`moonlightVideoCodec()` 给出编码标记（h264/hevc/av1），工具栏把它与超分状态合并进
-分辨率后的**同一个括号**、逗号分隔（`1920 × 1080 (FSR 1.5x, HEVC, HDR)`；软解再加 `CPU`；超分未生效/导入失败
+四种警告，多个事实以逗号分隔。**`hdr-degraded` 已不存在**：HDR 走解码 surface 后，画面怎么被呈现全在平台那一侧，
+本机没有任何可读的判据说"主机在 HDR 而本机没在跑 HDR"，因此不再编造这个状态（这正是"只说自己知道的事"）。
+`moonlightVideoCodec()` 给出编码标记（h264/hevc/av1），工具栏把它与超分状态合并进
+分辨率后的**同一个括号**、逗号分隔（`1920 × 1080 (FSR 1.5x, HEVC, HDR10 Vivid)`；软解再加 `CPU`；超分未生效/导入失败
 另有 `未超分`/`视频异常` token，色彩对不上另有 `色彩存疑`，HDR 那项只在**真的在放 HDR 时**才出现——判据是
-`moonlightVideoHdr()`，即主机已确认**且**输出级真的在跑 HDR10；主机在 HDR 而本机没跑起来时是 `HDR降级`，见
+`moonlightVideoHdr()`，即主机已确认 HDR（名字是基座传输，动态层在时追加 `Vivid`），见
 [`moonlight-session.md`](moonlight-session.md) §2）。
 
 ## 4. 其余 `STREAM_CONFIGURATION` 字段的落点

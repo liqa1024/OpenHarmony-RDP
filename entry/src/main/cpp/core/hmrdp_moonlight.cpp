@@ -33,6 +33,10 @@ namespace {
 // decoder that drops or reorders cannot grow the pairing map without bound.
 constexpr size_t kMaxPendingSubmitTimes = 240;
 
+// A run of refused presentations this long confirms the video path is not presenting at all: a surface
+// rebind can refuse a frame or two, which is not a broken path.
+constexpr int kPresentFailuresToConfirm = 4;
+
 // The codec the client decided for this session (0 = none); Setup enforces it.
 std::atomic<int> g_decidedVideoFormat{0};
 
@@ -119,7 +123,6 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     bool srRequested = false;
     bool srActive = false;
     bool colorMismatch = false;
-    bool hdrRunning = false;
     {
       std::lock_guard<std::mutex> lock(presenterMutex_);
       if (presenter_ == nullptr) {
@@ -130,13 +133,12 @@ class MoonlightVideoRenderer : public VideoFrameSink {
         srRequested = presenter_->superResolutionRequested();
         srActive = presenter_->superResolutionActive();
         colorMismatch = presenter_->videoColorMismatch();
-        hdrRunning = presenter_->hdrActive();
       }
     }
     if (token < 0) {
       ++presentFailures_;
       // A surface rebind can refuse a frame or two; only a run of failures names a broken path.
-      if (presentFailures_ >= 4 && !presentWarned_) {
+      if (presentFailures_ >= kPresentFailuresToConfirm && !presentWarned_) {
         presentWarned_ = true;
         SetWarning("video-present");
         HMRDP_LOGW("moonlight video: presenter refused frames; the video path is not presenting");
@@ -165,18 +167,6 @@ class MoonlightVideoRenderer : public VideoFrameSink {
       SetWarning("color-mismatch");
       HMRDP_LOGW("moonlight video: the buffer colour space disagrees with the one negotiated with the "
                  "host; the picture may differ from what it encoded");
-    }
-    // HDR asked for and the host confirmed it, but this output stage is not running it: the picture
-    // is folded onto SDR (the convert pass's degrade path) so the session stays usable, and the title
-    // says so rather than claiming HDR. A host that never confirmed HDR leaves the session
-    // legitimately SDR, so this fires only on that disagreement.
-    if (hdrRequested_.load() && hdrActive_.load() && !hdrRunning && !hdrWarned_) {
-      hdrWarned_ = true;
-      SetWarning("hdr-degraded");
-      HMRDP_LOGW("moonlight video: host is in HDR but this output stage cannot show HDR; degrading to SDR");
-    } else if (hdrRunning && hdrWarned_) {
-      hdrWarned_ = false;
-      ClearWarning("hdr-degraded");
     }
     return token;
   }
@@ -357,19 +347,21 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     return codec_;
   }
 
-  // The HDR format the session really presents: the host confirmed it and the output stage runs it.
-  // "" when the session is not really HDR (including the surface fallback, which has no output stage
-  // of ours). The name is the base transfer, or the dynamic layer when the stream carries it, so the
-  // toolbar reading matches what is on screen.
+  // The HDR format the session really presents. The reading is the host's own answer - the platform's
+  // decode path presents the picture and this side never touches it, so nothing about HDR is claimed
+  // that the host did not state; the dynamic layer is named from the session's own scan of the stream.
+  // The name is the base transfer plus that layer, so the toolbar says which pair is on screen
+  // (HDR10 or HLG, with Vivid when it is there).
   std::string Hdr() {
     std::lock_guard<std::mutex> lock(presenterMutex_);
-    if (presenter_ == nullptr || !presenter_->hdrActive()) {
+    const bool running =
+        presenter_ != nullptr ? presenter_->hdrActive() : hdrActive_.load();
+    if (!running) {
       return std::string();
     }
-    if (presenter_->vividHdrActive()) {
-      return "Vivid";
-    }
-    return hdrBase_.load() == 2 ? "HLG" : "HDR10";
+    const bool vivid = presenter_ != nullptr ? presenter_->vividHdrActive() : vividActive_.load();
+    const std::string base = hdrBase_.load() == 2 ? "HLG" : "HDR10";
+    return vivid ? base + " Vivid" : base;
   }
 
   bool HasPresenter() {
@@ -415,9 +407,11 @@ class MoonlightVideoRenderer : public VideoFrameSink {
 
   void Start() {
     std::lock_guard<std::mutex> lock(mutex_);
-    // The presenter's presence decides the output mode, not 超分: every decoded picture goes to it as
-    // a codec buffer, and the decoder renders into the window itself only where no presenter can
-    // import buffers (the compatibility fallback).
+    // The presenter's presence decides the output mode, not 超分. An HDR session has no presenter by
+    // construction (it is presented through the decoder's own surface - the platform's HDR path, see
+    // moonlight-video.md §2); otherwise every decoded picture goes to the presenter as a codec buffer,
+    // and the decoder renders into the window itself only where the presenter cannot import buffers
+    // (the compatibility fallback).
     const bool bufferMode = HasPresenter();
     if (srRequested_.load() && !bufferMode) {
       // Keep a codec warning that Setup already recorded; the two are independent session facts.
@@ -431,7 +425,6 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     presentWarned_ = false;
     srWarned_ = false;
     colorWarned_ = false;
-    hdrWarned_ = false;
     presentFailures_ = 0;
     // The library's HDR flag is process-global and survives a session, so a new session starts from
     // "not HDR" and only the host's own report turns it on.
@@ -448,7 +441,9 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     };
     // The presenter owns the real window, so the decoder hands out its own buffers instead (the
     // layout a byte-wise import needs is only reported in buffer mode, and the window never sees a
-    // decoded frame); the fallback renders straight into the window.
+    // decoded frame); without one (an HDR session, or the fallback) the decoder renders straight into
+    // the window - the platform's own HDR display path, which declares the surface itself (see
+    // moonlight-video.md §2).
     const bool started = bufferMode
         ? decoder_.StartBuffered(mime_, width_, height_, redrawRate_, hdrRequested_.load(),
                                  streamColor_, onFrame, this)
@@ -460,7 +455,7 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     }
     running_ = true;
     HMRDP_LOGI("moonlight video: started (%{public}s, stream %{public}s)",
-               bufferMode ? "buffer" : "surface fallback",
+               bufferMode ? "buffer" : "surface",
                ToString(streamColor_).c_str());
   }
 
@@ -513,19 +508,20 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     if (buffer_.empty()) {
       return DR_OK;
     }
-    // The host carries HDR Vivid as a registered T.35 SEI inside the same access unit whenever its
-    // HDR luminance analysis runs. Read it here and hand it to the presenter, which passes it to the
-    // window; the payload changes every frame, so it is only re-declared when it does.
+    // The host carries HDR Vivid as a registered T.35 SEI inside the same access unit whenever its HDR
+    // luminance analysis runs. The scan is the session's own reading of the dynamic layer, so the
+    // toolbar uses it on either path; where this session has a presenter (the buffer path) the payload
+    // is handed over as well, and since it changes every frame it is sent as it arrives.
     if (hdrActive_.load()) {
       const VividMetadata vivid = ScanVividMetadata(buffer_.data(), buffer_.size(), mime_.c_str());
       if (vivid.size != 0) {
-        if (!vividActive_) {
-          vividActive_ = true;
+        if (!vividActive_.load()) {
           HMRDP_LOGI("moonlight video: HDR Vivid detected (%{public}zu bytes)", vivid.size);
         }
+        vividActive_.store(true);
         SetStreamDynamicHdr(vivid.payload, static_cast<int>(vivid.size));
-      } else if (vividActive_) {
-        vividActive_ = false;
+      } else if (vividActive_.load()) {
+        vividActive_.store(false);
         SetStreamDynamicHdr(nullptr, 0);
       }
     }
@@ -570,10 +566,29 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     submitNsByPts_.clear();
   }
 
+  // The surface path's `video-present`: it has no sink to report a refused picture, so the codec's own
+  // run of refused renders is the reading. The counter only moves on that path (a buffer-mode session
+  // never renders into the surface), so the two reporters cannot fight over the token.
+  void RefreshPresentWarning() {
+    const bool failing = decoder_.surfacePresentFailures() >= kPresentFailuresToConfirm;
+    if (failing == presentFailedSurface_.load()) {
+      return;
+    }
+    presentFailedSurface_.store(failing);
+    if (failing) {
+      SetWarning("video-present");
+      HMRDP_LOGW("moonlight video: the output surface refuses decoded pictures; the video path is not "
+                 "presenting");
+    } else {
+      ClearWarning("video-present");
+    }
+  }
+
   // Runs once per decoded picture on the codec callback thread; pairs with the
   // submit time recorded in Submit() by presentation time.
   void NoteDecoded(int64_t ptsUs) {
     statDecoded_.fetch_add(1, std::memory_order_relaxed);
+    RefreshPresentWarning();
     int64_t submitNs = 0;
     {
       std::lock_guard<std::mutex> lock(submitMutex_);
@@ -629,7 +644,6 @@ class MoonlightVideoRenderer : public VideoFrameSink {
   bool presentWarned_ = false;
   bool srWarned_ = false;
   bool colorWarned_ = false;
-  bool hdrWarned_ = false;
   int presentFailures_ = 0;
   VideoDecoder decoder_;
   std::string mime_;
@@ -655,9 +669,12 @@ class MoonlightVideoRenderer : public VideoFrameSink {
   ColorDescription streamColor_;
   bool running_ = false;
   std::vector<uint8_t> buffer_;
-  // Whether the stream is carrying HDR Vivid, so a run without it is reported once (the payload
-  // itself changes every frame and is re-declared each time).
-  bool vividActive_ = false;
+  // Whether the stream is carrying HDR Vivid. Read by the toolbar and by the dynamic-metadata
+  // hand-off; the payload itself changes every frame and is only re-declared when it does.
+  std::atomic<bool> vividActive_{false};
+  // The output surface refused a run of pictures - the surface path's `video-present`
+  // (see RefreshPresentWarning).
+  std::atomic<bool> presentFailedSurface_{false};
 
   // frames = decoded pictures out of the codec; presented = frames the sink took and presented.
   std::atomic<uint64_t> statDecoded_{0};

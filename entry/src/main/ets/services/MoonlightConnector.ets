@@ -334,7 +334,9 @@ export class MoonlightConnector {
     const options: MoonlightLaunchOptions = new MoonlightLaunchOptions();
     // 超分: the stream is taken at output / ratio and the presenter upscales back, so the rate and
     // bitrate are judged against the session resolution (what the host encodes and this side decodes).
-    const srOn: boolean = sr.enabled && sr.ratioPercent > 100;
+    // An HDR session renders through the decoder's own output surface (the platform's HDR path, see
+    // moonlight-video.md §2), which has no upscaler, so 超分 is off for it by construction.
+    const srOn: boolean = sr.enabled && sr.ratioPercent > 100 && !hdrRequested;
     const sessionWidth: number = srOn ? SettingsStore.srSessionSize(width, sr.ratioPercent) : width;
     const sessionHeight: number = srOn
       ? SettingsStore.srSessionSize(height, sr.ratioPercent) : height;

@@ -237,7 +237,7 @@ export const moonlightVideoFormats: (choice: number, serverCodecModeSupport: num
 /** The negotiated codec token ("h264" / "hevc" / "av1"), or "" before a stream starts. */
 export const moonlightVideoCodec: () => string;
 
-/** The HDR format the session really presents: "HDR10" / "HLG", or "Vivid" when the host's stream carries the dynamic layer; "" while not presenting HDR. */
+/** The HDR format the session really presents: "HDR10" / "HLG", with " Vivid" appended when the host's stream carries the dynamic layer; "" while not presenting HDR. */
 export const moonlightVideoHdr: () => string;
 
 /** Decoder support for an ML_CODEC_* (1 H.264 / 2 HEVC / 3 AV1): 0 none, 1 software, 2 hardware. */
@@ -254,7 +254,7 @@ export const moonlightVideoTenBit: () => RdpTenBitCodecs;
 export const moonlightVideoMaxFps: (videoFormat: number, width: number, height: number) => number;
 
 /** Stable decode-path codes, comma separated when several apply: "software-decode|<mime>",
- *  "sr-unavailable", "sr-inactive", "hdr-degraded", "video-present", "color-mismatch"; "" when fine. */
+ *  "sr-unavailable", "sr-inactive", "video-present", "color-mismatch"; "" when fine. */
 export const moonlightVideoWarning: () => string;
 
 /** Everything LiStartConnection needs; assembled by the ArkTS control layer. */

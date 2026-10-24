@@ -85,10 +85,10 @@ export class DeviceCapabilities {
 
   // The colour protocol's Rec2020 entry is a statement about what the session asks the host to send,
   // not about what this device can show, so it is offered wherever a 10-bit profile can be decoded.
-  // The host decides whether HDR is produced at all (it replies on the control stream), and whether
-  // this window can show it is a runtime fact: a stream the output stage cannot present as HDR is
-  // folded onto SDR and the session says so (the `HDR降级` token and its toast). The host's own
-  // 10-bit support is checked with the host at connect time, like the codec choice.
+  // The host decides whether HDR is produced at all (it replies on the control stream), and the HDR
+  // picture is then presented by the platform's own decode path - this side neither declares nor reads
+  // that, so nothing here is gated on it. The host's own 10-bit support is checked with the host at
+  // connect time, like the codec choice.
   static hdr(): Capability {
     const capability: Capability = new Capability();
     let tenBit: RdpTenBitCodecs;

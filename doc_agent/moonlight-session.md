@@ -19,10 +19,10 @@
 - 工具栏与 RDP 同形：标题用共享的 `SessionTitle`（名称 + 分辨率 + 括号里的**会话标签**——超分、协商解码格式
   与 HDR 合并到同一个括号、逗号分隔，如 `(FSR 1.5x, HEVC, HDR)`），复用同一套
   chrome 与自动隐藏判定（`components/SessionChrome`、`services/ToolbarAutoHide`），支持全屏 / 最小化。
-  HDR 那一项只在**真的在放 HDR 时**出现，并写成实际格式（`HDR10` / `HLG`，流里带 HDR Vivid 时是 `Vivid`）——
-  判据是 `moonlightVideoHdr()`，即主机已确认**且**输出级真的在跑 HDR；主机在
-  HDR 而本机没跑起来时是 `HDR降级`（对应超分的 `未超分`，画面已折到 SDR），与 `CPU`/`视频异常`/`色彩存疑` 同属
-  诊断 token。
+  HDR 那一项只在**真的在放 HDR 时**出现，并写成基座传输（`HDR10` / `HLG`），流里带 HDR Vivid 动态层时追加
+  `Vivid`（`HDR10 Vivid` / `HLG Vivid`）——判据是 `moonlightVideoHdr()`，即**主机已确认 HDR**（HDR 走解码
+  surface，画面由平台呈现，本机没有可读的"到底有没有按 HDR 显示"的判据，所以不编造 `HDR降级` 这类状态）。
+  与 `CPU`/`视频异常`/`色彩存疑` 同属诊断 token。
 - **剪贴板入口**：主机广告剪贴板能力位且已连接时，工具栏插入共享的 `ClipboardButtons`（复制 / 系统 `PasteButton` 粘贴）；
   非基地版主机（无能力位）不显示入口。协议与语义见 [`moonlight-clipboard.md`](moonlight-clipboard.md)。
 - **停止会话会释放原生窗口**，所以窗口内「重试」先重新绑定仍存活的 XComponent surface 再重启（此时会话必然

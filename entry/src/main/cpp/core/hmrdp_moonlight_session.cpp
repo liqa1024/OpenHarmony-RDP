@@ -165,16 +165,23 @@ void Run(const MoonlightStreamConfig& config) {
     std::lock_guard<std::mutex> lock(g_mutex);
     context = g_context;
   }
-  const bool srRequested = sessionWidth != config.width || sessionHeight != config.height;
+  // HDR is presented through the decoder's own output surface - the platform's documented HDR path
+  // (see moonlight-video.md §2). The mode is decided once here: it cannot change while the session
+  // runs (switching it rebuilds the decoder).
+  const bool hdrRequested = config.colorSpace == COLORSPACE_REC_2020;
+  // 超分 never applies to an HDR session: that path has no presenter to upscale with, so the stream
+  // is taken at the output size and neither side scales.
+  const bool srRequested =
+      !hdrRequested && (sessionWidth != config.width || sessionHeight != config.height);
   // The presenter is the video path: every decoded picture is handed to it as a codec buffer
-  // (buffer mode), and 超分 is only a flag on that same object. The decoder's own output surface is
-  // the compatibility fallback for a device whose presenter cannot import buffers (in practice the
-  // emulator); it stays silent because the session still shows a picture there.
+  // (buffer mode), and 超分 is only a flag on that same object. It is skipped for an HDR session (the
+  // standard surface path above) and where it cannot import buffers - then the decoder renders into
+  // the surface itself, which is the compatibility fallback.
   // The presenter lives in this scope for the whole connection: the bridge borrows it from here and
   // must have given it back (MoonlightVideoDetachPresenter) before the scope ends.
   std::unique_ptr<FramePresenter> presenter;
   bool presenterActive = false;
-  if (context.window != nullptr) {
+  if (!hdrRequested && context.window != nullptr) {
     std::unique_ptr<FramePresenter> created = CreateFramePresenter();
     if (created != nullptr && created->supportsVideo()) {
       const int surfaceWidth = context.width > 0 ? context.width : config.width;
@@ -195,6 +202,12 @@ void Run(const MoonlightStreamConfig& config) {
                  "into the surface");
     }
   }
+  if (hdrRequested) {
+    // HDR runs on the decoder's own surface at the output size, entirely the platform's own HDR display
+    // path; nothing here touches the window.
+    sessionWidth = config.width;
+    sessionHeight = config.height;
+  }
   if (srRequested && !presenterActive) {
     // Keep a visible picture: the decoder renders straight into the window at the output size. The
     // host stream is still requested at the session size, so the host upscales instead of this device.
@@ -213,15 +226,15 @@ void Run(const MoonlightStreamConfig& config) {
   }
   g_cursorMagnificationMilli.store(cursorMagnificationMilli);
   // The colour-space setting asks for HDR by choosing Rec.2020; the host answers on the control
-  // stream (OnHdrMode) and that answer is what the output stage follows.
-  const bool hdrRequested = config.colorSpace == COLORSPACE_REC_2020;
+  // stream (OnHdrMode) and that answer is what the session follows.
   MoonlightVideoSetSuperResolutionRequested(srRequested);
   MoonlightVideoSetHdrRequested(hdrRequested);
   MoonlightVideoSetStreamColorSpace(config.colorSpace, config.colorRange, config.hdrMode);
   MoonlightVideoAttachPresenter(presenterActive ? presenter.get() : nullptr);
   HMRDP_LOGI("moonlight session %{public}dx%{public}d (presenter %{public}s, super resolution "
              "%{public}s %{public}s -> %{public}dx%{public}d, hdr %{public}s)",
-             config.width, config.height, presenterActive ? "buffer" : "surface fallback",
+             config.width, config.height,
+             presenterActive ? "buffer" : (hdrRequested ? "surface (hdr)" : "surface"),
              srRequested ? "on" : "off",
              config.srBackend == static_cast<int>(SuperResolutionBackend::kFsr) ? "fsr" : "xengine",
              sessionWidth, sessionHeight, hdrRequested ? "requested" : "off");

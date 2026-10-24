@@ -215,6 +215,7 @@ bool VideoDecoder::StartInternal(const std::string& mime, void* window, int widt
   frameRate_ = frameRate;
   statPresented_.store(0);
   statPresentDropped_.store(0);
+  surfacePresentFailures_.store(0);
   statHandOffReplaced_.store(0);
   statRefreshDropped_.store(0);
   nativeBufferWarned_ = false;
@@ -264,8 +265,7 @@ bool VideoDecoder::StartInternal(const std::string& mime, void* window, int widt
   }
   if (configured != AV_ERR_OK && buffered_ && tenBit_) {
     // The 10-bit layout is not a promise the platform makes, so a codec that refuses it still gets
-    // the session: it then hands out 8-bit frames, which the import presents as SDR (the bridge
-    // reports that through `hdr-degraded` rather than claiming HDR).
+    // the session: it then hands out 8-bit frames, which the import presents as SDR.
     HMRDP_LOGW("video decoder: 10-bit output rejected (%{public}d), falling back to NV12",
                configured);
     tenBit_ = false;
@@ -766,13 +766,25 @@ void VideoDecoder::HandleNewOutput(uint32_t index, OH_AVBuffer* buffer) {
   // Present as soon as the frame is decoded (the host paces the stream). In buffer mode "presenting"
   // means handing the picture to the sink, which returns it, and the display slot is decided there —
   // the hand-off thread holds the picture until its slot and a newer one replaces it, so a picture
-  // refused here would only be one the display could have shown. Only the fallback output surface has
-  // to gate on this thread, because it cannot hold a picture at all.
+  // refused here would only be one the display could have shown. Only the output-surface path (the
+  // HDR path and the fallback) has to gate on this thread, because it cannot hold a picture at all.
   if (buffered_) {
     HandOff(index, buffer);
   } else if (TakePresentSlot()) {
-    statPresented_.fetch_add(1, std::memory_order_relaxed);
-    OH_VideoDecoder_RenderOutputBuffer(codec_, index);
+    // The surface render is the only step on this path that can fail, and a refused render is a
+    // picture the display never got: it counts with the ones the gate dropped.
+    if (OH_VideoDecoder_RenderOutputBuffer(codec_, index) != AV_ERR_OK) {
+      statPresentDropped_.fetch_add(1, std::memory_order_relaxed);
+      surfacePresentFailures_.fetch_add(1, std::memory_order_relaxed);
+      if (!renderFailedWarned_) {
+        renderFailedWarned_ = true;
+        HMRDP_LOGW("video decoder: the output surface refused a decoded picture; dropping it");
+      }
+    } else {
+      statPresented_.fetch_add(1, std::memory_order_relaxed);
+      surfacePresentFailures_.store(0, std::memory_order_relaxed);
+      renderFailedWarned_ = false;
+    }
   } else {
     ReleaseOutput(index);
   }

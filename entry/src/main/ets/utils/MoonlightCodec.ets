@@ -67,16 +67,16 @@ export function moonlightDecodeTokens(): string[] {
   if (token.length > 0) {
     tokens.push(moonlightCodecTokenName(token));
   }
-  // Only a session that really presents HDR says so; the host's confirmation and the output stage
-  // both have to hold (see moonlight-video.md §2). The token names the format the session is actually
-  // presenting: HDR10, HLG, or Vivid when the stream carries the dynamic layer.
+  // Only a session that really presents HDR says so; the host's confirmation and this side actually
+  // running it both have to hold (see moonlight-video.md §2). The token names the base transfer the
+  // session presents - HDR10 or HLG - with the dynamic layer appended when the stream carries it
+  // (`HDR10 Vivid` / `HLG Vivid`).
   if (hdr.length > 0) {
     tokens.push(hdr);
   }
   let software: boolean = false;
   let srUnavailable: boolean = false;
   let srInactive: boolean = false;
-  let hdrDegraded: boolean = false;
   let videoError: boolean = false;
   let colorMismatch: boolean = false;
   const parts: string[] = warning.length > 0 ? warning.split(',') : [];
@@ -88,8 +88,6 @@ export function moonlightDecodeTokens(): string[] {
       srUnavailable = true;
     } else if (part.startsWith('sr-inactive')) {
       srInactive = true;
-    } else if (part.startsWith('hdr-degraded')) {
-      hdrDegraded = true;
     } else if (part.startsWith('video-present')) {
       videoError = true;
     } else if (part.startsWith('color-mismatch')) {
@@ -102,11 +100,6 @@ export function moonlightDecodeTokens(): string[] {
   // A requested 超分 that is not running must not keep claiming to be on in the title.
   if (srUnavailable || srInactive) {
     tokens.push('未超分');
-  }
-  // The host is in HDR but this device presents it as SDR: the picture is usable, just not HDR, so the
-  // title says so (a plain SDR session, host not in HDR, never reaches here).
-  if (hdrDegraded) {
-    tokens.push('HDR降级');
   }
   if (videoError) {
     tokens.push('视频异常');

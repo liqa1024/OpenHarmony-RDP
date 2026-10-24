@@ -91,8 +91,7 @@ napi_value MoonlightVideoHdr(napi_env env, napi_callback_info) {
 }
 
 // The decoder half of the HDR decision: whether this device declares a 10-bit profile at all. The
-// caller combines it with the host's SCM_MASK_10BIT at connect time; whether the output stage can run
-// HDR10 is a runtime fact the presenter reports (see the `hdr-degraded` warning).
+// caller combines it with the host's SCM_MASK_10BIT at connect time.
 napi_value MoonlightVideoTenBit(napi_env env, napi_callback_info) {
   const bool hevc = hmrdp::VideoDecoderTenBit("video/hevc");
   const bool av1 = hmrdp::VideoDecoderTenBit("video/av1");
@@ -360,8 +359,9 @@ napi_value MoonlightSessionSetSurface(napi_env env, napi_callback_info info) {
   }
   if (g_moonlightWindow != nullptr) {
     if (hmrdp::MoonlightSessionActive() && !hmrdp::MoonlightVideoBufferMode()) {
-      // Fallback (no presenter): the codec itself holds the old window, so a live replacement would
-      // need a decoder restart. Reject it rather than presenting into a dead surface.
+      // No presenter (an HDR session, or the fallback): the codec itself holds the old window, so a
+      // live replacement would need a decoder restart. Reject it rather than presenting into a dead
+      // surface.
       OH_NativeWindow_DestroyNativeWindow(window);
       return CreateBool(env, false);
     }

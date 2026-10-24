@@ -52,9 +52,10 @@ class VideoDecoder {
   VideoDecoder(const VideoDecoder&) = delete;
   VideoDecoder& operator=(const VideoDecoder&) = delete;
 
-  // Surface mode — the compatibility fallback, used only where no presenter can import codec
-  // buffers (see FramePresenter::supportsVideo): the codec writes every picture into `window`
-  // itself; the decode bridge only gates (render or release) and never sees the pixels.
+  // Surface mode — the codec writes every picture into `window` itself: the platform's documented
+  // HDR path (an HDR session always takes it, see moonlight-video.md §2), and the compatibility
+  // fallback where no presenter can import codec buffers (see FramePresenter::supportsVideo). The
+  // decode bridge only gates (render or release) and never sees the pixels.
   // `window` is the decode output surface (required). `frameRate` is the negotiated stream rate: it
   // configures the decoder and sizes the input budget; 0 means unknown.
   // `color` is the stream's encoding (the negotiated CSC, or Rec.2020 PQ for an HDR session). It is
@@ -97,6 +98,9 @@ class VideoDecoder {
   uint64_t refreshDroppedFrames() const { return statRefreshDropped_.load(); }
   // Frames that took the display slot (rendered in surface mode, handed to the sink in buffer mode).
   uint64_t presentedFrames() const { return statPresented_.load(); }
+  // Consecutive output-surface renders the display refused. The surface path has no sink to report a
+  // refused picture, so a run of these is what "this video path is not presenting" looks like there.
+  int surfacePresentFailures() const { return surfacePresentFailures_.load(); }
   std::string lastError() const;
 
  private:
@@ -167,12 +171,17 @@ class VideoDecoder {
   SlotSchedule slots_;
   std::atomic<uint64_t> statPresented_{0};
   std::atomic<uint64_t> statPresentDropped_{0};
+  // Consecutive refusals from the output surface; reset by any accepted render (see
+  // surfacePresentFailures).
+  std::atomic<int> surfacePresentFailures_{0};
   // Pictures replaced in the hand-off before the sink took them (the sink is behind the stream).
   std::atomic<uint64_t> statHandOffReplaced_{0};
   // Subset of the two above dropped while the display's gear was below the stream rate.
   std::atomic<uint64_t> statRefreshDropped_{0};
   // One-shot: a buffer with no OH_NativeBuffer behind it would otherwise log at the stream rate.
   bool nativeBufferWarned_ = false;
+  // One-shot: a surface that refused a decoded picture would otherwise log at the stream rate.
+  bool renderFailedWarned_ = false;
 
   // Buffer mode hand-off. The codec's callback thread only queues or releases a picture; the sink
   // runs on `handOffThread_`, and the picture returns to the codec when it is done with it. The
