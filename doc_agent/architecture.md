@@ -147,7 +147,7 @@
 | `core/hmrdp_audio.{h,cpp}` | **两协议共用**的**有界 PCM 交接环**（RDP rdpsnd sink 与 Moonlight Opus 解码都写入它；消费端为 ArkTS 渲染器或原生 OHAudio，缓冲策略与延迟预算在环里，见 [`audio.md`](audio.md)） |
 | `core/hmrdp_oh_audio.{h,cpp}` | **原生 OHAudio 输出**（Moonlight 低延迟模式）：`OH_AudioRenderer` FAST + 音频工作组，写回调直接拉交接环（见 [`moonlight-native.md`](moonlight-native.md) §2.3） |
 | `core/hmrdp_gamepad_kit.{h,cpp}` | **手柄轴来源（Game Controller Kit 薄封装）**：注册设备的上下线与五个轴监听，回调把"哪个控制产生的轴事件"+值交给 N-API（见 [`session-layer.md`](session-layer.md) §8） |
-| `core/hmrdp_video_decoder.{h,cpp}` | `OH_AVCodec` 硬件优先视频解码器（**两种输出模式**：buffer 交出输出缓冲（默认）/ surface 直出窗口（兜底，见 [`moonlight-video.md`](moonlight-video.md) §2）。默认路径的送显槽位在交接线程上等、等待期间可被新帧接管；只有 surface 兜底才在输出回调里判槽。见 §4.2） |
+| `core/hmrdp_video_decoder.{h,cpp}` | `OH_AVCodec` 硬件优先视频解码器（**两种输出模式**：surface 直出窗口（非超分的默认，含 HDR）/ buffer 交出输出缓冲（超分，见 [`moonlight-video.md`](moonlight-video.md) §2）。buffer 路径的送显槽位在交接线程上等、等待期间可被新帧接管；surface 路径在输出回调里判槽。见 §4.2） |
 | `core/hmrdp_decode_tuning.{h,cpp}` | 在线核数/性能簇/频率探测，供解码宽度与日志用 |
 | `core/hmrdp_log.h` | hilog 包装（domain `0xD001`、tag `HmRdpNative`） |
 | `shaders/present_quad.*` + `cmake/EmbedSpirv.cmake` | GLSL → SPIR-V 的构建期编译/嵌入（仍在 `cpp/` 根） |
@@ -178,7 +178,7 @@
 | **解码执行器**（会话自有 ffrt 队列） | progressive tile chunk 解码（每 region 若干任务） | 执行器随会话创建/销毁；解码入口以线程局部指针告知当前执行器，未设置则回退串行 |
 | **rdpsnd 播放线程**（FreeRDP async `play_thread`） | rdpsnd PDU 处理：DSP 解码 → 交给 `AudioSink` 的交接环 | 不碰画面；缓冲/丢弃/预缓冲全在环一处（见 [`audio.md`](audio.md) §3） |
 | **Moonlight 音频解码线程**（library `AudioDecoderThread`） | `decodeAndPlaySample`：Opus 多流解码 → 交给**同一个** `AudioSink` 交接环 | 不设 `CAPABILITY_DIRECT_SUBMIT`，故不占 RTP 接收线程；缓冲/预缓冲同样全在环一处（见 [`moonlight-native.md`](moonlight-native.md) §2.3） |
-| **Moonlight 解码归还线程**（会话自有，`core/hmrdp_video_decoder.*`） | buffer 模式（默认路径）下把解码器交出的帧交给 sink 上屏。**先等到显示槽位再送**（上限一个刷新周期），等待期间新到的帧接管该槽位、旧帧当场归还解码器，所以出去的一定是此刻最新的一帧；**最多两帧在飞**，轮到同一呈现槽位前等 fence 后才把缓冲归还解码器 | 解码输出回调**只投递或直接归还**（重活与等待都在归还线程上，回调永不阻塞）；presenter 的调用在 sink 内由交接锁保护，故拆会话不会把 presenter 从在飞的帧下面抽走（[`present.md`](present.md) §4） |
+| **Moonlight 解码归还线程**（会话自有，`core/hmrdp_video_decoder.*`） | buffer 模式（超分路径）下把解码器交出的帧交给 sink 上屏。**先等到显示槽位再送**（上限一个刷新周期），等待期间新到的帧接管该槽位、旧帧当场归还解码器，所以出去的一定是此刻最新的一帧；**最多两帧在飞**，轮到同一呈现槽位前等 fence 后才把缓冲归还解码器 | 解码输出回调**只投递或直接归还**（重活与等待都在归还线程上，回调永不阻塞）；presenter 的调用在 sink 内由交接锁保护，故拆会话不会把 presenter 从在飞的帧下面抽走（[`present.md`](present.md) §4） |
 | **OHAudio 回调线程**（Moonlight 低延迟模式，系统侧） | `OH_AudioRenderer` 的写回调直接从 `AudioSink` 环拉 PCM（`core/hmrdp_oh_audio.*`，见 [`moonlight-native.md`](moonlight-native.md) §2.3） | 回调内只做环的 `Read`（锁极短），**禁止**耗时操作与音频流控调用 |
 | **（默认音频渲染在 ArkTS 音频 worker）** | 其余情况（RDP、Moonlight 关低延迟）渲染器的拉取在 ArkTS 音频 worker（`AudioRenderer.writeData` → `audioRead`/`moonlightAudioRead`，§4.4）；原生侧只由上面两条线程往 sink 环写入 | — |
 | ArkTS/UI 线程 | 界面与输入事件；调用 `Send*` 写输入 | 不碰渲染/通道分发 |

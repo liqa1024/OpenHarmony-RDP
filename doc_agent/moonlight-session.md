@@ -45,10 +45,11 @@
   同为**每帧本机耗时**、子项不同（RDP 是四相之和，此处是单相）；该读数是**上界**（含输入排队与输出缓冲
   等待，见 [`moonlight-video.md`](moonlight-video.md) §1），故**着色阈值按目标帧周期缩放**：超 2×帧周期转黄、
   超 3×帧周期转红——只在明显超出解码帧预算（真过载）时才变色，不被正常排队误触发；第二行给在途待解码
-  帧数（`LiGetPendingVideoFrames`）与**总丢弃率**（输入预算丢弃 + 交接替换 + surface 兜底的闸门丢弃，见
+  帧数（`LiGetPendingVideoFrames`）与**总丢弃率**（输入预算丢弃 + buffer（超分）链路的交接替换 + surface 链路的
+  闸门丢弃，见
   [`moonlight-video.md`](moonlight-video.md) §1）。
-- **GPU** = **每帧**的呈现器工时（convert / 超分 / letterbox 三段之和）；默认（buffer）链路都有呈现器，
-  只有兜底的 surface 链路没有，那时显示 `GPU --`。第二行给三段拆分与**等显示**（`vkAcquireNextImageKHR` 的阻塞）。这三段与 RDP 的
+- **GPU** = **每帧**的呈现器工时（convert / 超分 / letterbox 三段之和）；只有 buffer（超分）链路有呈现器，
+  surface 链路没有，那时显示 `GPU --`。第二行给三段拆分与**等显示**（`vkAcquireNextImageKHR` 的阻塞）。这三段与 RDP 的
   `gpuCopyUs`/`gpuSrUs`/`gpuBlitUs` 同源，只是视频路径的 `copy` 段是 YUV→RGB 的 convert pass。
 - **过载提示**：颜色只说「不好」，说不出「改什么」，所以某一侧**连续两个采样窗口**都越过阈值（本机 = 3×
   帧周期，取 `max(解码往返, GPU 每帧)`）时弹一次提示。文案**一行一动作**（`本机处理跟不上，建议降低分辨率
@@ -67,7 +68,7 @@
   **两条文案的降像素思路相同**：低分辨率送流 + 本机放大，同一处降低**两侧**的像素工作量——主机少编、
   本机少解——代价是本机多一趟上采样（链路见 [`moonlight-video.md`](moonlight-video.md) §2），
   所以它同时是**主机过载**的出路，不只是本机的。
-- **FPS** = 当前**实际呈现帧**率 / 请求帧率（默认 buffer 模式计呈现器提交成功的帧，兜底 surface 模式计
+- **FPS** = 当前**实际呈现帧**率 / 请求帧率（buffer（超分）模式计呈现器提交成功的帧，surface 模式计
   解码器取得送显槽位的帧；都不是解码器输出的总帧数）；**码率** = 当前视频载荷码率（Σ 帧字节 ÷ 窗口）/ 配置码率。
   两处都用 `当前/目标` 写法，目标是发起时请求的 `fps` / `bitrateKbps`；码率单位只出现一次、两数共用
   （`数字/数字 单位`，≥1Mbps 用 `Mbps` 否则 `kbps`）。

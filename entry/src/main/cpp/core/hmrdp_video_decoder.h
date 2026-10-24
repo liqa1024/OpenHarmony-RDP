@@ -53,9 +53,11 @@ class VideoDecoder {
   VideoDecoder& operator=(const VideoDecoder&) = delete;
 
   // Surface mode — the codec writes every picture into `window` itself: the platform's documented
-  // HDR path (an HDR session always takes it, see moonlight-video.md §2), and the compatibility
-  // fallback where no presenter can import codec buffers (see FramePresenter::supportsVideo). The
-  // decode bridge only gates (render or release) and never sees the pixels.
+  // video path, and the one every non-超分 session takes (an HDR session because the platform's own HDR
+  // path presents it, a plain SDR session because nothing has to be upscaled - see
+  // moonlight-video.md §2), plus the compatibility fallback for 超分 where no presenter can import
+  // codec buffers (see FramePresenter::supportsVideo). The decode bridge only gates (render or
+  // release) and never sees the pixels.
   // `window` is the decode output surface (required). `frameRate` is the negotiated stream rate: it
   // configures the decoder and sizes the input budget; 0 means unknown.
   // `color` is the stream's encoding (the negotiated CSC, or Rec.2020 PQ for an HDR session). It is
@@ -63,12 +65,12 @@ class VideoDecoder {
   bool Start(const std::string& mime, void* window, int width, int height, int frameRate,
              const ColorDescription& color, FrameReadyFn onFrame);
 
-  // Buffer mode — the normal path: no output surface; the codec hands out its own output buffers
-  // (`OH_AVBuffer` -> `OH_AVBuffer_GetNativeBuffer`) and reports the frame layout in OnStreamChanged,
-  // which is what a GPU import needs. Every picture the display can still show is handed to `sink` on
-  // a hand-off thread; the buffer goes back to the codec as soon as the sink returns. At most one
-  // picture waits for the hand-off, so an overloaded sink costs the *oldest* frame, not latency
-  // growth.
+  // Buffer mode — the 超分 path (see FramePresenter::supportsVideo): no output surface; the codec
+  // hands out its own output buffers (`OH_AVBuffer` -> `OH_AVBuffer_GetNativeBuffer`) and reports the
+  // frame layout in OnStreamChanged, which is what a GPU import needs. Every picture the display can
+  // still show is handed to `sink` on a hand-off thread; the buffer goes back to the codec as soon as
+  // the sink returns. At most one picture waits for the hand-off, so an overloaded sink costs the
+  // *oldest* frame, not latency growth.
   bool StartBuffered(const std::string& mime, int width, int height, int frameRate,
                      const ColorDescription& color, FrameReadyFn onFrame, VideoFrameSink* sink);
 
@@ -84,8 +86,8 @@ class VideoDecoder {
   // Drops the every access unit still waiting for an input buffer. The dropped units break the
   // prediction chain, so the caller must force a keyframe before decoding can resume.
   size_t DropPending();
-  // Cumulative loss split by cause: display-gate drops (the fallback output surface only — buffer
-  // mode gives every picture a slot) and pictures replaced in the hand-off.
+  // Cumulative loss split by cause: display-gate drops (the output surface only — buffer mode gives
+  // every picture a slot) and pictures replaced in the hand-off.
   uint64_t presentDroppedFrames() const { return statPresentDropped_.load(); }
   uint64_t handOffReplacedFrames() const { return statHandOffReplaced_.load(); }
   // The part of the loss given up while the display's gear was below the stream rate — i.e. dropped
@@ -132,9 +134,9 @@ class VideoDecoder {
   // latter is the only source on platforms that do not put the layout in the stream-changed event.
   void UpdateGeometryFromFormat(OH_AVFormat* format);
   void ReadOutputDescription();
-  // Fallback output surface only: false when the display cannot show this frame before its next
-  // refresh, which is then released unwatched. Buffer mode never refuses a picture here — the
-  // hand-off thread waits for the slot and lets a newer picture take it over instead.
+  // Output-surface mode only: false when the display cannot show this frame before its next refresh,
+  // which is then released unwatched. Buffer mode never refuses a picture here — the hand-off thread
+  // waits for the slot and lets a newer picture take it over instead.
   bool TakePresentSlot();
   // Hands one picture back to the codec; the one place a buffer is returned.
   void ReleaseOutput(uint32_t index);

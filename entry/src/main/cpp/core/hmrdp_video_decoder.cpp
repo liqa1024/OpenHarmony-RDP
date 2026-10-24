@@ -753,8 +753,8 @@ void VideoDecoder::HandleNewOutput(uint32_t index, OH_AVBuffer* buffer) {
   // Present as soon as the frame is decoded (the host paces the stream). In buffer mode "presenting"
   // means handing the picture to the sink, which returns it, and the display slot is decided there —
   // the hand-off thread holds the picture until its slot and a newer one replaces it, so a picture
-  // refused here would only be one the display could have shown. Only the output-surface path (the
-  // HDR path and the fallback) has to gate on this thread, because it cannot hold a picture at all.
+  // refused here would only be one the display could have shown. Only the output-surface path (every
+  // non-超分 session) has to gate on this thread, because it cannot hold a picture at all.
   if (buffered_) {
     HandOff(index, buffer);
   } else if (TakePresentSlot()) {

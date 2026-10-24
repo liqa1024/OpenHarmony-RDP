@@ -335,11 +335,10 @@ class MoonlightVideoRenderer : public VideoFrameSink {
 
   void Start() {
     std::lock_guard<std::mutex> lock(mutex_);
-    // The presenter's presence decides the output mode, not 超分. An HDR session has no presenter by
-    // construction (it is presented through the decoder's own surface - the platform's HDR path, see
-    // moonlight-video.md §2); otherwise every decoded picture goes to the presenter as a codec buffer,
-    // and the decoder renders into the window itself only where the presenter cannot import buffers
-    // (the compatibility fallback).
+    // The presenter is built only for 超分 (see hmrdp_moonlight_session.cpp), so its presence is
+    // exactly "the buffer mode": every decoded picture goes to it as a codec buffer, and 超分 is a flag
+    // on that same object. Without it - every non-SR session, HDR included - the decoder renders into
+    // the window itself, the platform's own video surface.
     const bool bufferMode = HasPresenter();
     if (srRequested_.load() && !bufferMode) {
       // Keep a codec warning that Setup already recorded; the two are independent session facts.
