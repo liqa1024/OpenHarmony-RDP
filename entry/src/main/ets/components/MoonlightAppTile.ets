@@ -5,7 +5,7 @@ import { ControlDisc } from './ControlDisc';
 import { MaterialSupport } from '../utils/MaterialSupport';
 
 const BOXART_ASPECT: number = 200 / 267;
-const TILE_WIDTH: number = 108;
+export const TILE_WIDTH: number = 108;
 const TILE_HEIGHT: number = TILE_WIDTH / BOXART_ASPECT;
 const TILE_RADIUS: number = 14;
 const STAR_CONTROL: number = 28;
@@ -205,7 +205,7 @@ export struct MoonlightAppTile {
     }
     .width(TILE_WIDTH)
     .height(TILE_HEIGHT)
-    .margin({ right: 12, bottom: 16 })
+    .margin({ bottom: 16 })
     .backgroundColor($r('app.color.surface_subtle'))
     .borderRadius(TILE_RADIUS)
     .border({

@@ -1,4 +1,5 @@
 import { common } from '@kit.AbilityKit';
+import { LengthMetrics } from '@kit.ArkUI';
 import { image } from '@kit.ImageKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ConnectAction, ConnectOrigin, HostPower, MoonlightConnection,
@@ -9,13 +10,13 @@ import { MoonlightLauncher } from '../services/MoonlightLauncher';
 import { HOST_REPROBE_DELAY_MS, MoonlightHostState, HostTargetListener }
   from '../services/MoonlightHostState';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
-import { MoonlightAppTile } from '../components/MoonlightAppTile';
+import { MoonlightAppTile, TILE_WIDTH } from '../components/MoonlightAppTile';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { NvApp, PairResult } from '../moonlight/MoonlightModels';
 import { BackgroundImage } from '../services/BackgroundImage';
 import { SettingsStore } from '../services/SettingsStore';
 import { connectActionFor } from '../utils/ConnectAction';
-import { showToast } from '../utils/UiUtil';
+import { lengthToNumber, showToast } from '../utils/UiUtil';
 import { promptPairingPin } from '../utils/PairingPrompt';
 import { FabButton } from '../components/FabButton';
 import { PageHeader } from '../components/PageHeader';
@@ -25,6 +26,7 @@ import { StateView, StateViewKind } from '../components/StateView';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpMoonlightApps';
+const MIN_COL_GAP: number = 12;
 
 export interface MoonlightAppsParams {
   connectionId: string;
@@ -43,6 +45,7 @@ struct MoonlightAppsPage {
   @State defaultAppId: string = '';
   @State iconMap: Map<number, image.PixelMap> = new Map<number, image.PixelMap>();
   @State backgroundUri: string = '';
+  @State gridWidth: number = 0;
   private conn: MoonlightConnection | undefined = undefined;
   private connectionId: string = '';
   private httpsPort: number = 47984;
@@ -342,6 +345,22 @@ struct MoonlightAppsPage {
     return `${app.id}#${this.iconMap.has(app.id) ? 1 : 0}`;
   }
 
+  private columns(): number {
+    if (this.gridWidth <= TILE_WIDTH) {
+      return 1;
+    }
+    return Math.max(1, Math.floor((this.gridWidth + MIN_COL_GAP) / (TILE_WIDTH + MIN_COL_GAP)));
+  }
+
+  private columnGap(): number {
+    const count: number = this.columns();
+    if (count <= 1) {
+      return 0;
+    }
+    const raw: number = (this.gridWidth - count * TILE_WIDTH) / (count - 1);
+    return raw > 0 ? Math.floor(raw * 100) / 100 : 0;
+  }
+
   build() {
     Stack({ alignContent: Alignment.BottomEnd }) {
       PageBackground({ uri: this.backgroundUri })
@@ -408,7 +427,11 @@ struct MoonlightAppsPage {
                   .width('100%')
                   .margin({ bottom: 12 })
               }
-              Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
+              Flex({
+                wrap: FlexWrap.Wrap,
+                justifyContent: FlexAlign.Start,
+                space: { main: LengthMetrics.vp(this.columnGap()) }
+              }) {
                 ForEach(this.apps, (app: NvApp) => {
                   MoonlightAppTile({
                     icon: this.iconMap.get(app.id),
@@ -437,9 +460,12 @@ struct MoonlightAppsPage {
                 }, (app: NvApp) => this.tileKey(app))
               }
               .width('100%')
+              .onAreaChange((_old: Area, area: Area) => {
+                this.gridWidth = lengthToNumber(area.width);
+              })
             }
             .width('100%')
-            .padding({ left: 24, right: 88, top: 16, bottom: 16 })
+            .padding({ left: 24, right: 56, top: 16, bottom: 16 })
           }
           .layoutWeight(1)
           .align(Alignment.Top)
