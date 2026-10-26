@@ -14,7 +14,7 @@ export const WHEEL_VP_PER_DEGREE: number = 21 / 15;
 export const MIN_SPEED_SCALE: number = 0.2;
 export const MAX_SPEED_SCALE: number = 4;
 export const DEFAULT_SPEED_SCALE: number = 1;
-export const DEFAULT_PINCH_NOTCHES_PER_UNIT: number = 20;
+export const DEFAULT_PINCH_NOTCHES_PER_UNIT: number = 4;
 
 export class WheelChunk {
   horizontal: boolean = false;
