@@ -549,6 +549,12 @@ export class SettingsStore {
         profile.enabled = false;
       }
     }
+    if (!profile.enabled) {
+      // 关着时倍率位必须归 0：下游一律以「倍率 > 100」判超分是否开着（会话标题标签 `srTag`、
+      // `srSessionSize`），留着设置里的档位（默认 1.25x）会让关着的会话显示成 XEngine 1.25x。
+      profile.ratioPercent = 0;
+      return profile;
+    }
     if (profile.ratioPercent <= 100) {
       profile.ratioPercent = SR_RATIO_PRESETS[0];
     }

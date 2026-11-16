@@ -78,7 +78,9 @@
     逐个**置灰**并显示原因；不满足时按关闭处理。
     `SettingsStore.resolveSr(protocol, setting)` 是唯一的解析与兜底点（`conn` 两者都满足 `SrSetting`；
     `srBackendUsable(backend, protocol)` 把能力合起来判，选中的后端不可用时改用另一个，都不行才关掉），
-    所以会话绝不会谈下一个本机放大不回去的分辨率。
+    所以会话绝不会谈下一个本机放大不回去的分辨率。解析结果遵守一条不变式：**关着时倍率位归 0**，
+    即「倍率 > 100 ⇔ 超分生效」——设置里存着的档位（默认 `1.25x`）不得外泄，因为下游
+    （会话标题标签 `srTag`、`srSessionSize`）都以倍率判开关，留着档位会把关着的会话显示成开着的。
   - **HDR 与超分互斥（Moonlight）**：HDR 会话走解码器输出 surface、本机不建呈现器，因而不会叠超分
     （`MoonlightConnector.prepare` 的 `srOn` 直接排除 `hdrRequested`，见
     [`moonlight-video.md`](moonlight-video.md) §2）。设置页据此互斥化：选了 `Rec2020（HDR）` 后超分整栏

@@ -892,7 +892,9 @@ struct SessionPage {
   }
 
   private srIndicator(): string {
-    if (this.options.streamWidth <= 0) {
+    // 超分真的生效才出标签：倍率位在关着时可能还留着设置里的档位（见 SettingsStore.gateSr），
+    // 拿它当开关会让没开超分的会话也显示「XEngine 1.25x」。
+    if (!this.options.srEnabled) {
       return '';
     }
     return joinSessionTags([srTag(this.options.srBackend, this.options.srRatioPercent)]);
