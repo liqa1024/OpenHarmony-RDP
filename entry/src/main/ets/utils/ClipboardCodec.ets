@@ -1,4 +1,9 @@
 import { util } from '@kit.ArkTS';
+import { hilog } from '@kit.PerformanceAnalysisKit';
+import { DecodedText, TextEncoding } from './TextEncoding';
+
+const DOMAIN: number = 0xD001;
+const TAG: string = 'HmRdpClipCodec';
 
 const PIXEL_FORMAT_ARGB_8888: number = 1;
 const PIXEL_FORMAT_RGBA_8888: number = 3;
@@ -545,31 +550,49 @@ export class ClipboardCodec {
     const bytes: Uint8Array = new Uint8Array(cfHtml);
     const startMarker: Uint8Array = utf8(HTML_START_FRAGMENT);
     const endMarker: Uint8Array = utf8(HTML_END_FRAGMENT);
+    // The charset is declared in the context (head), which sits outside the
+    // fragment, so sniff it from the whole payload.
+    const declared: string = TextEncoding.markupCharset(bytes);
     const markerBegin: number = indexOfBytes(bytes, startMarker, 0);
     const markerEnd: number = indexOfBytes(bytes, endMarker, 0);
     if (markerBegin >= 0 && markerEnd > markerBegin + startMarker.length) {
-      const begin: number = markerBegin + startMarker.length;
-      return decodeUtf8(bytes.subarray(begin, markerEnd));
+      return ClipboardCodec.decodeCfHtmlRange(bytes, markerBegin + startMarker.length, markerEnd,
+        declared);
     }
     const headerLimit: number = bytes.length < 512 ? bytes.length : 512;
     const header: Uint8Array = bytes.subarray(0, headerLimit);
     const startFragment: number = readOffset(header, 'StartFragment:');
     const endFragment: number = readOffset(header, 'EndFragment:');
     if (startFragment >= 0 && endFragment > startFragment && endFragment <= bytes.length) {
-      return decodeUtf8(bytes.subarray(startFragment, endFragment));
+      return ClipboardCodec.decodeCfHtmlRange(bytes, startFragment, endFragment, declared);
     }
     const startHtml: number = readOffset(header, 'StartHTML:');
     const endHtml: number = readOffset(header, 'EndHTML:');
     if (startHtml >= 0 && endHtml > startHtml && endHtml <= bytes.length) {
-      return decodeUtf8(bytes.subarray(startHtml, endHtml));
+      return ClipboardCodec.decodeCfHtmlRange(bytes, startHtml, endHtml, declared);
     }
-    return decodeUtf8(bytes);
+    const whole: DecodedText = TextEncoding.decode(bytes, declared);
+    hilog.info(DOMAIN, TAG, 'cf_html whole: %{public}s %{public}u bytes',
+      whole.charset, bytes.length);
+    return whole.text;
+  }
+
+  private static decodeCfHtmlRange(bytes: Uint8Array, begin: number, end: number,
+    declared: string): string {
+    const fragment: DecodedText = TextEncoding.decode(bytes.subarray(begin, end), declared);
+    hilog.info(DOMAIN, TAG, 'cf_html fragment: %{public}s declared=%{public}s',
+      fragment.charset, declared.length === 0 ? "none" : declared);
+    return fragment.text;
   }
 
   static parseRtf(rtf: ArrayBuffer): string {
     const bytes: Uint8Array = new Uint8Array(rtf);
     const len: number = bytes.length;
     const colors: string[] = parseRtfColorTable(bytes);
+    // `\'hh` escapes and the `\uN` fallback are written in the document's ANSI
+    // code page, not in a fixed one.
+    const escapeCharset: string = TextEncoding.rtfCharset(bytes);
+    hilog.info(DOMAIN, TAG, 'rtf: ansicpg->%{public}s', escapeCharset);
     const destinations: string[] = ['fonttbl', 'colortbl', 'stylesheet', 'info',
       'pict', 'header', 'footer', 'footerl', 'footerr', 'footnote', 'listtable',
       'listoverridetable', 'xmlnstbl', 'generator', 'themedata', 'colorschememapping',
@@ -623,6 +646,15 @@ export class ClipboardCodec {
     let style: RtfRunStyle = new RtfRunStyle();
     const styleStack: RtfRunStyle[] = [cloneRtfStyle(style)];
     const skipStack: boolean[] = [false];
+    // `\ucN` bounds how many fallback units trail each `\uN`; it is restored at
+    // group end like the other run properties.
+    let ucSkip: number = 1;
+    const ucStack: number[] = [1];
+    // Escaped bytes are decoded as one run (a CJK escape is a two-byte pair, and
+    // a `\uN` pair is two UTF-16 code units), so both are buffered until a token
+    // that is neither ends the run.
+    let escapeBytes: number[] = [];
+    let pendingUnits: number[] = [];
 
     const skipping = (): boolean => {
       for (let k = skipStack.length - 1; k >= 0; k--) {
@@ -651,12 +683,45 @@ export class ClipboardCodec {
         push('<span style="' + css + '">');
       }
     };
+    const flushPending = (): void => {
+      if (escapeBytes.length > 0) {
+        const chunk: Uint8Array = new Uint8Array(escapeBytes.length);
+        for (let k = 0; k < escapeBytes.length; k++) {
+          chunk[k] = escapeBytes[k] & 0xFF;
+        }
+        const decoded: DecodedText = TextEncoding.decodeDeclared(chunk, escapeCharset);
+        ensureRun();
+        const encoded: Uint8Array = utf8(decoded.text);
+        for (let k = 0; k < encoded.length; k++) {
+          pushByte(encoded[k]);
+        }
+        escapeBytes = [];
+      }
+      if (pendingUnits.length > 0) {
+        ensureRun();
+        for (let k = 0; k < pendingUnits.length; k++) {
+          const unit: number = pendingUnits[k];
+          if (unit >= 0xD800 && unit <= 0xDBFF && k + 1 < pendingUnits.length
+            && pendingUnits[k + 1] >= 0xDC00 && pendingUnits[k + 1] <= 0xDFFF) {
+            appendUtf8(0x10000 + ((unit - 0xD800) << 10) + (pendingUnits[k + 1] - 0xDC00));
+            k++;
+          } else {
+            appendUtf8(unit);
+          }
+        }
+        pendingUnits = [];
+      }
+    };
 
     for (let i = 0; i < len; i++) {
       const c: number = bytes[i];
+      if (c !== 0x5C || !(i + 1 < len && bytes[i + 1] === 0x27)) {
+        flushPending();
+      }
       if (c === 0x7B) {
         styleStack.push(cloneRtfStyle(style));
         skipStack.push(false);
+        ucStack.push(ucSkip);
         let j: number = i + 1;
         while (j < len && (bytes[j] === 0x0D || bytes[j] === 0x0A || bytes[j] === 0x20)) {
           j++;
@@ -690,6 +755,10 @@ export class ClipboardCodec {
         if (skipStack.length > 0) {
           skipStack.pop();
         }
+        const restoredUc: number | undefined = ucStack.pop();
+        if (restoredUc !== undefined) {
+          ucSkip = restoredUc;
+        }
         continue;
       }
       if (c === 0x5C) {
@@ -709,8 +778,7 @@ export class ClipboardCodec {
           if (i + 2 < len) {
             const value: number = hexVal(bytes[i + 1]) * 16 + hexVal(bytes[i + 2]);
             if (!skipping()) {
-              ensureRun();
-              appendUtf8(value);
+              escapeBytes.push(value);
             }
             i += 2;
           }
@@ -782,16 +850,25 @@ export class ClipboardCodec {
         } else if (word === 'tab') {
           ensureRun();
           pushByte(0x09);
+        } else if (word === 'uc') {
+          ucSkip = hasValue ? value : 1;
         } else if (word === 'u') {
-          ensureRun();
-          appendUtf8(value);
-          // Skip the single `\uc` fallback character that follows \uN.
-          const fallback: number = i + 1;
-          if (fallback + 2 < len && bytes[fallback] === 0x5C && bytes[fallback + 1] === 0x27) {
-            i = fallback + 3;
-          } else if (fallback < len) {
-            i = fallback;
+          // `\uN` is a signed 16-bit UTF-16 code unit; pairs are joined at flush.
+          if (!skipping()) {
+            pendingUnits.push(value < 0 ? value + 0x10000 : value);
           }
+          // Drop the `\ucN` fallback units (each `\'hh` is one unit) that follow.
+          let skipAt: number = i + 1;
+          let skipped: number = 0;
+          while (skipped < ucSkip && skipAt < len) {
+            if (bytes[skipAt] === 0x5C && skipAt + 3 < len && bytes[skipAt + 1] === 0x27) {
+              skipAt += 4;
+            } else {
+              skipAt += 1;
+            }
+            skipped++;
+          }
+          i = skipAt - 1;
         }
         continue;
       }
@@ -803,6 +880,7 @@ export class ClipboardCodec {
         escapePush(c);
       }
     }
+    flushPending();
     closeRun();
     push('</p>');
     const result: Uint8Array = new Uint8Array(out.length);

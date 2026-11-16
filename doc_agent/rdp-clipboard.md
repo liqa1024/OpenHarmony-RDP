@@ -101,6 +101,17 @@ kind 并在响应上回带，另发一个 `RemoteFormatResponse`（无论成功/
   导出都带）就**复用**，只算字节偏移（CF_HTML 偏移是**字节**，不是字符），不注入重复标记、不规范化
   原内容。写本机时若远端只给片段，用最小 `<html><body>` 包成良构文档；多格式必须落在**同一 Record
   的不同 Entry**，不能建两条 Record。
+- **收进来的富文本按载荷自带的编码解，不写死一种**（`utils/TextEncoding`）：CF_HTML 规范规定 UTF-8，
+  但真实产生者仍会把内容写成载荷里 `<meta charset>` / `content="…; charset=…"` 声明的 ANSI 代码页，
+  写死 UTF-8 就会把中文变成替换字符。判定顺序是 **BOM > 严格 UTF-8（解出替换字符即算失败）> 载荷
+  声明的 charset > 兜底候选**（`gb18030 > big5 > shift_jis > euc-kr > windows-1252`，取第一个能干净解出的）；
+  只有最后一步是猜，命中时打 hilog（`cf_html fragment:` / `cf_html whole:`）便于回溯。**声明要扫整个载荷**
+  ——`<meta>` 在片段之外的 `<head>` 里。
+- **RTF 的 `\'hh` 与 `\uN` 兜底按 `\ansicpg` 解，不按 Latin-1**：`\'xx\'xx` 是**文档 ANSI 代码页**的字节
+  （中文 Windows 上就是 GBK 双字节），逐字节当 Latin-1 码点会整段乱码，故连续的 `\'hh` 攒成一段再用
+  `\ansicpg` 声明的字符集解（缺失时按 RTF 默认 windows-1252）；`\ucN` 声明每个 `\uN` 后面跟几个兜底
+  单位，必须按它跳过（写死跳一个会把兜底字节留在正文里），`\uN` 是**有符号 16 位 UTF-16 码元**，只成对
+  拼非 BMP 字符、不逐个当码点编码（否则代理项编成非法 UTF-8 又被解成替换字符）。
 - **RTF 兜底**：很多 Windows 应用只显式提供 `Rich Text Format` 而无 `HTML Format`（HTML 是 Word 在 OLE
   层按需合成的，`EnumClipboardFormats` 枚举**不会触发**合成），故客户端自带 RTF→HTML 转换。
   注意 `\colortbl` 索引约定：第一个 `;` 是索引 0（auto），之后每个 `;` 递增，解析时**不要预置空条目**，
