@@ -405,35 +405,6 @@ export class ClipboardCodec {
     return full.buffer as ArrayBuffer;
   }
 
-  static stripHtmlToText(html: string): string {
-    let out: string = '';
-    for (let i = 0; i < html.length; i++) {
-      if (html[i] !== '<') {
-        out += html[i];
-        continue;
-      }
-      const close: number = html.indexOf('>', i);
-      if (close < 0) {
-        break;
-      }
-      const tag: string = html.substring(i + 1, close);
-      const first: string = tag.length === 0
-        ? '' : String.fromCharCode(tag.charCodeAt(0) | BYTE_SPACE);
-      if (first === 'b' && tag.length >= 2 && (tag[1] === 'r' || tag[1] === 'R')) {
-        out += '\n';
-      } else if (first === 'p' || first === 'd' || first === 'l' || first === 't') {
-        out += '\n';
-      }
-      i = close;
-    }
-    const codes: string[] = ['&amp;', '&lt;', '&gt;', '&quot;', '&#39;', '&nbsp;'];
-    const chars: string[] = ['&', '<', '>', '"', '\'', ' '];
-    for (let k = 0; k < codes.length; k++) {
-      out = out.split(codes[k]).join(chars[k]);
-    }
-    return out;
-  }
-
   static parseDib(dib: ArrayBuffer): DibImage | undefined {
     const size: number = dib.byteLength;
     if (size < 40) {

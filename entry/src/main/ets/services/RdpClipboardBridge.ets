@@ -104,7 +104,7 @@ export class RdpClipboardBridge implements ClipboardBridge {
       return;
     }
     if (item.hasHtml()) {
-      BackgroundWorker.pushHtml(this.native.handleId(), item.html)
+      BackgroundWorker.pushHtml(this.native.handleId(), item.html, item.text)
         .then((ok: boolean): void => {
           this.message(ok ? ClipboardText.pasted(ClipboardText.HTML)
                           : ClipboardText.pasteFailed(ClipboardText.HTML));

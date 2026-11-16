@@ -101,6 +101,15 @@ kind 并在响应上回带，另发一个 `RemoteFormatResponse`（无论成功/
   导出都带）就**复用**，只算字节偏移（CF_HTML 偏移是**字节**，不是字符），不注入重复标记、不规范化
   原内容。写本机时若远端只给片段，用最小 `<html><body>` 包成良构文档；多格式必须落在**同一 Record
   的不同 Entry**，不能建两条 Record。
+- **纯文本回退：源方自带的优先，缺失才用平台能力合成**。给远端广告 "HTML Format" 时同时广告的 `CF_UNICODETEXT`、
+  以及写本机时同 Record 里的 `text/plain` Entry，都是这一份纯文本。本机→远端优先取粘贴板记录自带的 `text/plain`
+  Entry（源应用自己的纯文本，最忠实），没有才合成；远端→本机现在一律合成（远端那条 `CF_UNICODETEXT` 按优先级
+  没去拉，要改就得在 HTML 之后再补一次请求）。**合成走平台 `StyledString.fromHtml(...).getString()`**（`utils/HtmlText`）。
+- **不自己写 HTML 解析**：手写标签剔除会把 `script`/`style`/`head` 里的文字和注释当正文捡出来（曾经的表现就是
+  "回退出来的不只是纯文本"，全是 CSS 和 Office 条件注释）；而 `xml.XmlPullParser`（Moonlight 解析 GFE applist
+  用的那套）是 **XML** 拉解析器，官方口径要求输入良构，剪贴板 HTML 满是不闭合 `<br>`/`<meta>`、Word 的无引号
+  属性、`&nbsp;` 未定义实体，喂进去只会失败。平台自带的 HTML 解析入口只有 `StyledString.fromHtml`，它 **只能在
+  UI 线程调**（stage 模型），故纯文本那半在 UI 线程算好再交给 worker（`BackgroundRequest.plain`）。
 - **收进来的富文本按载荷自带的编码解，不写死一种**（`utils/TextEncoding`）：CF_HTML 规范规定 UTF-8，
   但真实产生者仍会把内容写成载荷里 `<meta charset>` / `content="…; charset=…"` 声明的 ANSI 代码页，
   写死 UTF-8 就会把中文变成替换字符。判定顺序是 **BOM > 严格 UTF-8（解出替换字符即算失败）> 载荷

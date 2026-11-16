@@ -3,6 +3,7 @@ import { image } from '@kit.ImageKit';
 import { fileIo, fileUri } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ClipboardItem, ClipboardText, LocalReadResult } from '../model/ClipboardModels';
+import { HtmlText } from './HtmlText';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpClipboard';
@@ -119,6 +120,12 @@ export class LocalPasteboard {
       const html: string = await LocalPasteboard.findHtmlEntry(data);
       if (html.length > 0) {
         item.html = html;
+        // Plain half of the same record, in the order the user set: the source
+        // application's own plain text first, the platform conversion only when
+        // it left none (`ClipboardItem.text` is carried as that half, never as
+        // a second item type).
+        const own: string = await LocalPasteboard.findPlainEntry(data, html);
+        item.text = own.length > 0 ? own : await HtmlText.toPlainText(html);
         return item;
       }
     }
@@ -147,6 +154,24 @@ export class LocalPasteboard {
     return '';
   }
 
+  // A plain slot may alias the markup (or hold a stale copy of it); only a value
+  // that is neither the HTML nor markup is the source's own plain text.
+  private static async findPlainEntry(data: pasteboard.PasteData, html: string): Promise<string> {
+    const count: number = data.getRecordCount();
+    for (let i = 0; i < count; i++) {
+      try {
+        const record: pasteboard.PasteDataRecord = data.getRecord(i);
+        const value: pasteboard.ValueType = await record.getData(pasteboard.MIMETYPE_TEXT_PLAIN);
+        if (typeof value === 'string' && value.length > 0 && value !== html
+          && !value.trimStart().startsWith('<')) {
+          return value;
+        }
+      } catch (error) {
+      }
+    }
+    return '';
+  }
+
   static async write(item: ClipboardItem, label: string, host: LocalPasteboardHost): Promise<boolean> {
     let data: pasteboard.PasteData | undefined = undefined;
     try {
@@ -164,7 +189,8 @@ export class LocalPasteboard {
       } else if (item.hasHtml()) {
         const htmlDoc: string = LocalPasteboard.ensureHtmlDocument(item.html);
         data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_HTML, htmlDoc);
-        const plain: string = LocalPasteboard.htmlToPlainText(htmlDoc);
+        const plain: string = item.text.length > 0
+          ? item.text : await HtmlText.toPlainText(htmlDoc);
         if (plain.length > 0) {
           // Same Record, extra Entry: one fragment in two formats, so targets
           // do not treat them as separate items.
@@ -196,66 +222,11 @@ export class LocalPasteboard {
     }
   }
 
-  static htmlToPlainText(html: string): string {
-    const lower: string = html.toLowerCase();
-    let out: string = '';
-    let i: number = 0;
-    while (i < html.length) {
-      const lt: number = html.indexOf('<', i);
-      if (lt < 0) {
-        out += html.substring(i);
-        break;
-      }
-      out += html.substring(i, lt);
-      const gt: number = html.indexOf('>', lt);
-      if (gt < 0) {
-        break;
-      }
-      const tag: string = lower.substring(lt + 1, gt).trim();
-      let skipUntil: string = '';
-      if (tag.startsWith('script')) {
-        skipUntil = '</script';
-      } else if (tag.startsWith('style')) {
-        skipUntil = '</style';
-      } else if (tag.startsWith('head')) {
-        skipUntil = '</head';
-      } else if (tag.startsWith('!--')) {
-        skipUntil = '-->';
-      }
-      if (skipUntil.length > 0) {
-        const close: number = lower.indexOf(skipUntil, gt + 1);
-        if (close < 0) {
-          break;
-        }
-        const closeGt: number = html.indexOf('>', close);
-        i = closeGt < 0 ? html.length : closeGt + 1;
-        continue;
-      }
-      if (tag.startsWith('br') || tag.startsWith('p') || tag.startsWith('/p') ||
-        tag.startsWith('div') || tag.startsWith('/div') || tag.startsWith('li') ||
-        tag.startsWith('tr') || tag.startsWith('h1') || tag.startsWith('h2') ||
-        tag.startsWith('h3')) {
-        out += '\n';
-      }
-      i = gt + 1;
-    }
-    return LocalPasteboard.decodeHtmlEntities(out).trim();
-  }
-
   static ensureHtmlDocument(html: string): string {
     if (html.toLowerCase().indexOf('<html') >= 0) {
       return html;
     }
     return '<html><body>' + html + '</body></html>';
-  }
-
-  private static decodeHtmlEntities(text: string): string {
-    return text.split('&nbsp;').join(' ')
-      .split('&amp;').join('&')
-      .split('&lt;').join('<')
-      .split('&gt;').join('>')
-      .split('&quot;').join('"')
-      .split('&#39;').join('\'');
   }
 
   private static listFiles(dir: string): string[] {

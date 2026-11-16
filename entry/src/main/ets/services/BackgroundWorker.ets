@@ -167,9 +167,9 @@ class BackgroundWorkerImpl {
     return response.ok;
   }
 
-  async pushHtml(handle: number, html: string): Promise<boolean> {
+  async pushHtml(handle: number, html: string, plain: string): Promise<boolean> {
     const request: BackgroundRequest = {
-      id: this.nextId, op: BackgroundOps.PUSH_HTML, handle: handle, html: html
+      id: this.nextId, op: BackgroundOps.PUSH_HTML, handle: handle, html: html, plain: plain
     };
     this.nextId++;
     const response: BackgroundResponse = await this.send(request, []);

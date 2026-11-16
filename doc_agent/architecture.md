@@ -83,7 +83,9 @@
 | `utils/MoonlightCodec.ets` | Moonlight 编码器能力分类（硬解 / 软解 / 无） |
 | `utils/SessionTags.ets` | 会话标题标签：RDP / Moonlight 共用的单个括号与逗号分隔（超分、编码格式、运行态警告），避免两页各拼一套 |
 | `utils/TelemetryFormat.ets` | 遥测显示：µs→ms、GPU 每帧 / 三段拆分的统一格式，RDP 与 Moonlight 共用 |
-| `utils/ClipboardCodec.ets` | 剪贴板格式编解码（DIB/RTF/HTML/CfHTML 解析与组装），跑在后台 worker |
+| `utils/ClipboardCodec.ets` | 剪贴板格式编解码（DIB/RTF/CF_HTML 拆壳与加壳），跑在后台 worker |
+| `utils/HtmlText.ets` | HTML→纯文本（纯文本回退），走平台 `StyledString.fromHtml`；仅 UI 线程可用 |
+| `utils/TextEncoding.ets` | 线上字节→字符串的编码判定与解码（BOM / 严格 UTF-8 / 载荷声明的 charset / 兜底候选），剪贴板协议无关 |
 | `utils/FileTransferCodec.ets` | 文件剪贴板线格式编解码（`FileGroupDescriptorW` 等） |
 | `utils/UiUtil.ets` | `showToast` / `showConfirm` / `showNotice` / `lengthToNumber` 等共享 UI 工具；反馈语义见 [`ui-feedback.md`](ui-feedback.md) |
 | `utils/FeedbackHost.ets` | 窗口级反馈宿主：Toast 命名档位与去重、单模态队列、页面/窗口释放；按 `UIContext` 隔离 |

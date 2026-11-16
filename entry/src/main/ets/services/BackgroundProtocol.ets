@@ -31,6 +31,7 @@ export interface BackgroundRequest {
   png?: ArrayBuffer;
   text?: string;
   html?: string;
+  plain?: string;
   pixels?: ArrayBuffer;
   width?: number;
   height?: number;

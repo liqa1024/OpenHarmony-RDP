@@ -13,7 +13,9 @@ Moonlight 侧协议见 [`moonlight-clipboard.md`](moonlight-clipboard.md)；工�
   以及文件传输的单传输约束、进度、取消、沙箱目录保留策略。它只驱动 `bridge.capabilities()` 为真的路径。
 - `services/ClipboardBridge`：协议缝。`capabilities()` 声明本协议能带哪些内容（`text/html/image/files`）；`sendItem`
   由桥按自身能力择一发送；`remoteItem` 交回缓存的远端内容；传输状态经 sink 回调上抛给控制器。
-- `utils/LocalPasteboard`：本机系统剪贴板读写（文本 / HTML Entry / 图片 / 文件 URI）与 HTML 文本工具，协议无关。
+- `utils/LocalPasteboard`：本机系统剪贴板读写（文本 / HTML Entry / 图片 / 文件 URI）与写回时的 HTML 文档包装，协议无关。
+- `utils/ClipboardCodec`：剪贴板格式编解码（DIB/RTF/CF_HTML 拆壳与加壳），跑在后台 worker。
+- `utils/HtmlText`：HTML→纯文本（供纯文本回退用），走平台 ArkUI `StyledString.fromHtml`；**只能在 UI 线程调**。
 - `utils/TextEncoding`：线上字节 → 字符串的编码判定与解码（BOM → 严格 UTF-8 → 载荷自带的 charset 声明 → 兜底
   候选），协议无关；详情见 [`rdp-clipboard.md`](rdp-clipboard.md) §3。
 - 图片中立表示 = `image.PixelMap`；`PixelMap↔PNG` 编解码是共享 worker op（`ENCODE_PNG`/`DECODE_PNG`）。

@@ -105,9 +105,11 @@ async function handleRequest(req: BackgroundRequest): Promise<void> {
       // the reply carries its success (a dead session must not report "sent").
       res.ok = setClipboardText(handle, req.text);
     } else if (req.op === BackgroundOps.PUSH_HTML) {
+      // The plain half is prepared on the UI thread (the platform HTML
+      // conversion is stage-model only); an empty one just leaves the remote
+      // with nothing to paste as text.
       const html: string = req.html ?? '';
-      res.ok = setClipboardHtmlRaw(handle, ClipboardCodec.buildCfHtml(html),
-        ClipboardCodec.stripHtmlToText(html));
+      res.ok = setClipboardHtmlRaw(handle, ClipboardCodec.buildCfHtml(html), req.plain ?? '');
     } else if (req.op === BackgroundOps.PUSH_IMAGE && req.pixels !== undefined) {
       const width: number = req.width ?? 0;
       const height: number = req.height ?? 0;
