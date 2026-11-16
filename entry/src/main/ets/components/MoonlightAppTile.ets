@@ -12,6 +12,21 @@ const STAR_CONTROL: number = 28;
 const STAR_SIZE: number = 18;
 const ACTION_CONTROL: number = 36;
 const ACTION_SIZE: number = 22;
+// 碟片摆放常量（星标右上、动作行底部居中），与原来「整层 Column + padding + 对齐」等价。
+const STAR_INSET: number = 5;
+const ACTION_INSET: number = 6;
+const ACTION_GAP: number = 8;
+const ACTION_ROW_WIDTH: number = ACTION_CONTROL * 2 + ACTION_GAP;
+// 碟片的响应热区（`ControlDisc` 的 responseRegion 固定 44×44，比可视圆大一圈）。碟片所在的那一层把
+// **响应热区**收到这一块：`HitTestMode.Default` 只阻塞兄弟节点、不影响祖先，所以碟片独占这一块的同时，
+// 祖先 `Scroll` 照旧拿到轴事件（滚轮 / 触控板滚动不会被吞）。
+const DISC_HIT: number = 44;
+const STAR_ZONE_X: number = TILE_WIDTH - STAR_INSET - STAR_CONTROL - (DISC_HIT - STAR_CONTROL) / 2;
+const STAR_ZONE_Y: number = STAR_INSET - (DISC_HIT - STAR_CONTROL) / 2;
+const ACTION_ZONE_WIDTH: number = ACTION_ROW_WIDTH + (DISC_HIT - ACTION_CONTROL);
+const ACTION_ZONE_X: number = (TILE_WIDTH - ACTION_ROW_WIDTH) / 2 - (DISC_HIT - ACTION_CONTROL) / 2;
+const ACTION_ZONE_Y: number =
+  TILE_HEIGHT - ACTION_INSET - ACTION_CONTROL - (DISC_HIT - ACTION_CONTROL) / 2;
 
 @Component
 export struct MoonlightAppTile {
@@ -36,6 +51,52 @@ export struct MoonlightAppTile {
 
   build() {
     Stack({ alignContent: Alignment.Center }) {
+      // 卡片自己的点击 / 悬停 / 提示面**单独成层、放在最下**（不是碟片的祖先）：这样碟片那两层与它是
+      // **兄弟**关系，"默认模式阻塞兄弟、不影响祖先"就够用——碟片独占自己的热区、卡片其余区域照常响应，
+      // 而祖先 `Scroll` 全程不被排除，滚动不会被吞。加了 `BLOCK_HIERARCHY` 就会连祖先一起断掉
+      // （见 doc_agent/ui-feedback.md §4.7）。
+      Column()
+        .width('100%')
+        .height('100%')
+        .onHover((isHover: boolean) => {
+          if (!this.clickable()) {
+            return;
+          }
+          this.hovered = isHover;
+          if (!isHover) {
+            this.pressed = false;
+          }
+        })
+        .onMouse((event: MouseEvent) => {
+          if (!this.clickable()) {
+            return;
+          }
+          if (event.action === MouseAction.Press) {
+            this.pressed = true;
+          } else if (event.action === MouseAction.Release) {
+            this.pressed = false;
+          }
+        })
+        .onTouch((event: TouchEvent) => {
+          if (!this.clickable()) {
+            return;
+          }
+          if (event.type === TouchType.Down) {
+            this.pressed = true;
+          } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+            this.pressed = false;
+          }
+        })
+        .bindTips(this.loading ? '正在连接'
+          : (this.isRunning ? '运行中' : this.tip), MaterialSupport.tipsOptions())
+        .onClick(() => {
+          if (this.clickable()) {
+            this.onOpen();
+          }
+        })
+        .focusable(this.clickable())
+        .focusOnTouch(this.clickable())
+
       Stack({ alignContent: Alignment.Center }) {
         if (this.icon !== undefined) {
           Image(this.icon)
@@ -66,6 +127,7 @@ export struct MoonlightAppTile {
             .width(32)
             .height(32)
             .color($r('app.color.icon_on_brand'))
+            .hitTestBehavior(HitTestMode.None)
         }
         .width('100%')
         .height('100%')
@@ -86,6 +148,7 @@ export struct MoonlightAppTile {
             .borderRadius(4)
             .padding({ left: 6, right: 6, top: 2, bottom: 2 })
             .transition(fadeTransition())
+            .hitTestBehavior(HitTestMode.None)
         }
       }
       .width('100%')
@@ -115,10 +178,18 @@ export struct MoonlightAppTile {
       }
       .width('100%')
       .height('100%')
-      .padding(5)
+      .padding(STAR_INSET)
       .justifyContent(FlexAlign.Start)
       .alignItems(HorizontalAlign.End)
-      .hitTestBehavior(HitTestMode.None)
+      // 星标那一层只在自己的响应热区里参与命中：热区内它（默认模式）阻塞下方的卡片点击面，热区外它不在
+      // 命中结果里，卡片点得到。祖先不受影响，滚动照旧。
+      .hitTestBehavior(HitTestMode.Default)
+      .responseRegion({
+        x: STAR_ZONE_X,
+        y: STAR_ZONE_Y,
+        width: DISC_HIT,
+        height: DISC_HIT
+      })
 
       Column() {
         if (this.isRunning) {
@@ -128,7 +199,7 @@ export struct MoonlightAppTile {
                 icon: $r('app.media.ic_disconnect'),
                 diameter: ACTION_CONTROL,
                 glyph: ACTION_SIZE,
-                gap: 8,
+                gap: ACTION_GAP,
                 tip: '断开连接',
                 animated: true,
                 frosted: true,
@@ -162,7 +233,7 @@ export struct MoonlightAppTile {
                 icon: $r('app.media.ic_play'),
                 diameter: ACTION_CONTROL,
                 glyph: ACTION_SIZE,
-                gap: 8,
+                gap: ACTION_GAP,
                 tip: connectActionLabel(ConnectAction.Resume),
                 animated: true,
                 frosted: true,
@@ -198,10 +269,17 @@ export struct MoonlightAppTile {
       }
       .width('100%')
       .height('100%')
-      .padding({ bottom: 6 })
+      .padding({ bottom: ACTION_INSET })
       .justifyContent(FlexAlign.End)
       .alignItems(HorizontalAlign.Center)
-      .hitTestBehavior(HitTestMode.None)
+      // 同星标一层：只在碟片热区内阻塞下方的卡片点击面。
+      .hitTestBehavior(HitTestMode.Default)
+      .responseRegion({
+        x: ACTION_ZONE_X,
+        y: ACTION_ZONE_Y,
+        width: ACTION_ZONE_WIDTH,
+        height: DISC_HIT
+      })
     }
     .width(TILE_WIDTH)
     .height(TILE_HEIGHT)
@@ -222,45 +300,6 @@ export struct MoonlightAppTile {
     })
     .scale(hoverPressScale(this.hovered && this.clickable(), this.pressed && this.clickable()))
     .animation({ duration: MOTION_HOVER_PRESS_MS, curve: MOTION_CURVE })
-    .onHover((isHover: boolean) => {
-      if (!this.clickable()) {
-        return;
-      }
-      this.hovered = isHover;
-      if (!isHover) {
-        this.pressed = false;
-      }
-    })
-    .onMouse((event: MouseEvent) => {
-      if (!this.clickable()) {
-        return;
-      }
-      if (event.action === MouseAction.Press) {
-        this.pressed = true;
-      } else if (event.action === MouseAction.Release) {
-        this.pressed = false;
-      }
-    })
-    .onTouch((event: TouchEvent) => {
-      if (!this.clickable()) {
-        return;
-      }
-      if (event.type === TouchType.Down) {
-        this.pressed = true;
-      } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
-        this.pressed = false;
-      }
-    })
-    .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
-    .onClick(() => {
-      if (this.clickable()) {
-        this.onOpen();
-      }
-    })
-    .bindTips(this.loading ? '正在连接'
-      : (this.isRunning ? '运行中' : this.tip), MaterialSupport.tipsOptions())
-    .focusable(this.clickable())
-    .focusOnTouch(this.clickable())
   }
 }
 

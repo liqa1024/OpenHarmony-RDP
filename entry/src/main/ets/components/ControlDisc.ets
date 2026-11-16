@@ -81,7 +81,9 @@ export struct ControlDisc {
     .scale(hoverPressScale(this.hovered && !this.loading, this.pressed && !this.loading))
     .animation({ duration: MOTION_HOVER_PRESS_MS, curve: MOTION_CURVE })
     .transition(this.animated ? popTransition() : TransitionEffect.IDENTITY)
-    .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
+    // 不要在这里阻断命中（`Block` / `BLOCK_HIERARCHY`）：那会连祖先一起断掉，宿主的可滚动祖先从此收不到
+    // 轴事件，指针停在碟片上时滚动被吞（见 doc_agent/ui-feedback.md §4.7）。与可交互宿主的隔离由宿主那层
+    // 负责——宿主把自己的**响应热区**收到碟片区、用默认模式（阻塞兄弟、不影响祖先）。
     .onHover((isHover: boolean) => {
       if (this.loading) {
         return;
