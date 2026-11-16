@@ -131,6 +131,8 @@ struct SessionPage {
   private toolbarWidthPercent: number = DEFAULT_TOOLBAR_WIDTH_PERCENT;
   private hoverDelay: number = 350;
   private hideDelay: number = 250;
+  // 工具条收起时 +1，请画面把焦点拿回去（见 SessionPicture.reclaimFocus）。
+  @State private reclaimFocusToken: number = 0;
   private sink: SessionInputPort | undefined = undefined;
   private input: SessionInput | undefined = undefined;
   private pinchDirect: boolean = false;
@@ -232,6 +234,9 @@ struct SessionPage {
         this.showOverlay = visible;
       },
       setToolbarVisible: (visible: boolean): void => {
+        if (!visible && this.showToolbar) {
+          this.reclaimFocusToken++;
+        }
         this.showToolbar = visible;
       },
       setFullscreen: (fullscreen: boolean): void => {
@@ -993,6 +998,7 @@ struct SessionPage {
             revealBand: (this.isFullscreen && !this.showOverlay && !this.showToolbar)
               ? this.revealBand : 0,
             revealBandWidth: this.revealWidthPercent,
+            reclaimFocusToken: this.reclaimFocusToken,
             onPointerMouse: (event: MouseEvent) => {
               this.handleMouse(event);
             },

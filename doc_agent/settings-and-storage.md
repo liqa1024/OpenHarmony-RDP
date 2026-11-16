@@ -133,7 +133,7 @@
   浮层材质开关与厚度。关 = 所有浮层（轻提示 / 气泡 / 菜单 / 弹窗）回退到自绘样式；厚度「默认」= 各落点
   跟随官方默认（不设 `systemMaterial`），其余五档统一覆盖。设备不支持时两项一起置灰并按关处理。
   落库时同步给运行时（`MaterialSupport.configure`），即时生效。视觉口径见 [`ui-visual.md`](ui-visual.md) §3.5。
-- **快捷键穿透**（`shortcutPassthrough`，进程级，默认关）：会话窗口聚焦时用系统按键拦截把 Win / Alt+Tab /
+- **快捷键穿透**（`shortcutPassthrough`，进程级，默认开）：会话窗口聚焦时用系统按键拦截把 Win / Alt+Tab /
   Esc 等发给远端（需 ACL `ohos.permission.INTERCEPT_INPUT_EVENT`）。按会话窗口焦点实时注册/释放，
   行为与代价见 [`session-layer.md`](session-layer.md) §8。
 - **开发者选项**（`developerMode`，进程级，默认关）：dev/实验功能的**总开关**。关着时以下入口都不存在：

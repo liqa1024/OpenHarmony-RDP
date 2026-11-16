@@ -116,6 +116,8 @@ struct MoonlightSessionPage {
   private toolbarWidthPercent: number = DEFAULT_TOOLBAR_WIDTH_PERCENT;
   private hoverDelay: number = 700;
   private hideDelay: number = 250;
+  // 工具条收起时 +1，请画面把焦点拿回去（见 SessionPicture.reclaimFocus）。
+  @State private reclaimFocusToken: number = 0;
 
   @State state: ConnectionState = ConnectionState.Connecting;
   @State statusText: string = '正在连接…';
@@ -254,6 +256,9 @@ struct MoonlightSessionPage {
         this.connectOverlayVisible = visible;
       },
       setToolbarVisible: (visible: boolean): void => {
+        if (!visible && this.showToolbar) {
+          this.reclaimFocusToken++;
+        }
         this.showToolbar = visible;
       },
       setFullscreen: (fullscreen: boolean): void => {
@@ -950,6 +955,7 @@ struct MoonlightSessionPage {
           hdrBrightness: this.hdrBrightness,
           revealBand: (this.isFullscreen && !this.showToolbar) ? this.revealBand : 0,
           revealBandWidth: this.revealWidthPercent,
+          reclaimFocusToken: this.reclaimFocusToken,
           onPointerMouse: (event: MouseEvent) => {
             this.handleMouse(event);
           },

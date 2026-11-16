@@ -79,7 +79,7 @@ export class AppSettings {
   useRdpCursor: boolean = true;
   reconnectOnForeground: boolean = false;
   winKeySubstitute: number = 0;
-  shortcutPassthrough: boolean = false;
+  shortcutPassthrough: boolean = true;
   mainWindowSizeEnabled: boolean = false;
   mainWindowWidth: number = 0;
   mainWindowHeight: number = 0;
@@ -149,7 +149,7 @@ export class AppSettings {
   mlLowLatencyAudio: boolean = true;
   mlReconnectOnForeground: boolean = false;
   mlWinKeySubstitute: number = 0;
-  mlShortcutPassthrough: boolean = false;
+  mlShortcutPassthrough: boolean = true;
   mlVmouseHintShown: boolean = false;
 }
 

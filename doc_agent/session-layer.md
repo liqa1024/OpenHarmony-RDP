@@ -337,7 +337,7 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
     整发（不会卡键）。真鼠标右键不受影响。
 - **自定义 Win 键映射**（全局设置，0＝关闭）：在 `SessionInput.handleKey` 里把指定 `keyCode` 改发 Meta。
   **真实 Win 键不转发**，避免"远端+本机"双重映射。
-- **快捷键穿透**（全局设置 `shortcutPassthrough`，默认关）：系统级按键拦截
+- **快捷键穿透**（全局设置 `shortcutPassthrough`，默认开，可在设置里关）：系统级按键拦截
   （`OH_Input_AddKeyEventInterceptor`，需 ACL `ohos.permission.INTERCEPT_INPUT_EVENT`）接管键盘，
   让 Win / Alt+Tab / Esc 这些本会被 shell 吃掉的键也到远端。拦截事件按**本会话**路由到
   `SessionInput.handleInterceptedKey`（映射与记账同 `handleKey`，但**不跳过真实 Win**）；
@@ -345,7 +345,8 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
   进程级单拦截器，只有获焦会话持有，切窗/失活即释放。（与"自定义 Win 键映射"不同，穿透下**真实 Win 键会被转发**。）
   - 拦截是**进程级、且只在应用获焦时投递**，故只在**本会话窗口活动**且会话 `Connected` 时注册；其他窗口
     （设置页 / 主列表）变为活动、或本页离开即释放，否则那些窗口的键盘也会被吞掉。
-  - 代价是开启期间**本机的系统快捷键一并被远端接管**，所以默认关；注册失败（缺 ACL 等）时后端返回
+  - 代价是开启期间**本机的系统快捷键一并被远端接管**（这是默认开的取舍：关掉它时 Win / Alt+Tab / Esc 这类
+    键会被本机 shell 吃掉）；注册失败（缺 ACL 等）时后端返回
     `false`，UI 保持普通按键通路而不是把键盘丢掉。
 - **手柄（控制器，Moonlight 专有）**：OH 把柄键上报为**按键事件**、把摇杆与十字键上报为**焦点轴事件**
   （`FocusAxisEvent`，只投给**获焦组件**——画面 XComponent 就是获焦者）。策略在 `services/input/GamepadInput.ets`，
