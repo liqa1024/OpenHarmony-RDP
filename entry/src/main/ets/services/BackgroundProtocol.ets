@@ -35,7 +35,6 @@ export interface BackgroundRequest {
   pixels?: ArrayBuffer;
   width?: number;
   height?: number;
-  pixelFormat?: number;
   data?: ArrayBuffer;
   handle?: number;
   dataHandle?: number;
@@ -51,16 +50,14 @@ export interface BackgroundResponse {
   ok: boolean;
   width?: number;
   height?: number;
-  pixelFormat?: number;
   text?: string;
   buffer?: ArrayBuffer;
 }
 
-// Raw BGRA pixels plus the format needed to rebuild a PixelMap.
+// Raw BGRA pixels plus the size needed to rebuild a PixelMap.
 export class DecodedImage {
   width: number = 0;
   height: number = 0;
-  pixelFormat: number = 0;
   bgra: ArrayBuffer = new ArrayBuffer(0);
 }
 

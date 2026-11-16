@@ -19,6 +19,8 @@ Moonlight 侧协议见 [`moonlight-clipboard.md`](moonlight-clipboard.md)；工�
 - `utils/TextEncoding`：线上字节 → 字符串的编码判定与解码（BOM → 严格 UTF-8 → 载荷自带的 charset 声明 → 兜底
   候选），协议无关；详情见 [`rdp-clipboard.md`](rdp-clipboard.md) §3。
 - 图片中立表示 = `image.PixelMap`；`PixelMap↔PNG` 编解码是共享 worker op（`ENCODE_PNG`/`DECODE_PNG`）。
+  原始像素缓冲在两协议间**统一为 BGRA_8888**（读一律走 `readPixels(area)`）；写本机剪贴板的 PixelMap 一律
+  声明 `srcPixelFormat: BGRA_8888` + `pixelFormat: RGBA_8888`（格式口径与踩坑见 [`rdp-clipboard.md`](rdp-clipboard.md) §3）。
 - 共享 UI：`components/SessionChrome` 的 `ClipboardButtons` / `ClipboardTransferStatus`，两协议工具栏复用。
 
 **能力降级**：RDP 桥声明全能力（文本/HTML/图片/文件），协议机制（cliprdr 协商、DIB/CF_HTML/RTF 线格式、文件流、

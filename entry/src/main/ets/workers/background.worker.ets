@@ -13,15 +13,17 @@ const downloads: FileDownloader = new FileDownloader((event: BackgroundEvent): v
 
 // Best-effort: any failure (or a device without the encoder in this context)
 // just means the push falls back to CF_DIB alone.
-async function encodePng(pixels: ArrayBuffer, width: number, height: number,
-  pixelFormat: number): Promise<ArrayBuffer | undefined> {
+// `pixels` is BGRA_8888; createPixelMapSync's default `srcPixelFormat` is BGRA
+// too, but declare both formats so the two can never drift apart.
+async function encodePng(pixels: ArrayBuffer, width: number, height: number): Promise<ArrayBuffer | undefined> {
   if (width <= 0 || height <= 0) {
     return undefined;
   }
   try {
     const options: image.InitializationOptions = {
       editable: false,
-      pixelFormat: pixelFormat,
+      srcPixelFormat: image.PixelMapFormat.BGRA_8888,
+      pixelFormat: image.PixelMapFormat.RGBA_8888,
       size: { width: width, height: height }
     };
     const bitmap: image.PixelMap = image.createPixelMapSync(pixels, options);
@@ -36,7 +38,8 @@ async function encodePng(pixels: ArrayBuffer, width: number, height: number,
   }
 }
 
-// Runs on the worker so a large decode never stalls the UI thread.
+// Runs on the worker so a large decode never stalls the UI thread. Read through
+// the area API: it is the one read that always yields BGRA_8888.
 async function decodePng(png: ArrayBuffer): Promise<DecodedImage | undefined> {
   try {
     const source: image.ImageSource = image.createImageSource(png);
@@ -50,13 +53,17 @@ async function decodePng(png: ArrayBuffer): Promise<DecodedImage | undefined> {
     const options: image.DecodingOptions = { editable: false };
     const bitmap: image.PixelMap = await source.createPixelMap(options);
     source.release();
-    const buffer: ArrayBuffer = new ArrayBuffer(width * height * 4);
-    await bitmap.readPixelsToBuffer(buffer);
+    const area: image.PositionArea = {
+      pixels: new ArrayBuffer(width * height * 4),
+      offset: 0,
+      stride: width * 4,
+      region: { size: { width: width, height: height }, x: 0, y: 0 }
+    };
+    await bitmap.readPixels(area);
     const decoded: DecodedImage = new DecodedImage();
     decoded.width = width;
     decoded.height = height;
-    decoded.pixelFormat = info.pixelFormat;
-    decoded.bgra = buffer;
+    decoded.bgra = area.pixels;
     bitmap.release();
     return decoded;
   } catch (err) {
@@ -86,7 +93,7 @@ async function handleRequest(req: BackgroundRequest): Promise<void> {
       res.text = ClipboardCodec.parseCfHtml(req.cfHtml);
     } else if (req.op === BackgroundOps.ENCODE_PNG && req.pixels !== undefined) {
       const png: ArrayBuffer | undefined = await encodePng(req.pixels, req.width ?? 0,
-        req.height ?? 0, req.pixelFormat ?? 0);
+        req.height ?? 0);
       if (png !== undefined && png.byteLength > 0) {
         res.ok = true;
         res.buffer = png;
@@ -97,7 +104,6 @@ async function handleRequest(req: BackgroundRequest): Promise<void> {
         res.ok = true;
         res.width = decoded.width;
         res.height = decoded.height;
-        res.pixelFormat = decoded.pixelFormat;
         res.buffer = decoded.bgra;
       }
     } else if (req.op === BackgroundOps.PUSH_TEXT && req.text !== undefined) {
@@ -113,10 +119,9 @@ async function handleRequest(req: BackgroundRequest): Promise<void> {
     } else if (req.op === BackgroundOps.PUSH_IMAGE && req.pixels !== undefined) {
       const width: number = req.width ?? 0;
       const height: number = req.height ?? 0;
-      const format: number = req.pixelFormat ?? 0;
-      const dib: ArrayBuffer | undefined = ClipboardCodec.buildDib(req.pixels, width, height, format);
+      const dib: ArrayBuffer | undefined = ClipboardCodec.buildDib(req.pixels, width, height);
       if (dib !== undefined) {
-        const png: ArrayBuffer | undefined = await encodePng(req.pixels, width, height, format);
+        const png: ArrayBuffer | undefined = await encodePng(req.pixels, width, height);
         res.ok = setClipboardImage(handle, dib, png ?? new ArrayBuffer(0));
       }
     }

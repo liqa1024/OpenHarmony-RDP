@@ -187,10 +187,17 @@ export class MoonlightClipboardBridge implements ClipboardBridge {
         this.message(ClipboardText.LOCAL_EMPTY);
         return;
       }
-      const buffer: ArrayBuffer = new ArrayBuffer(width * height * 4);
-      await pixelMap.readPixelsToBuffer(buffer);
+      // The area API is the read that always yields BGRA_8888, whatever the
+      // source PixelMap's own format is.
+      const area: image.PositionArea = {
+        pixels: new ArrayBuffer(width * height * 4),
+        offset: 0,
+        stride: width * 4,
+        region: { size: { width: width, height: height }, x: 0, y: 0 }
+      };
+      await pixelMap.readPixels(area);
       const png: ArrayBuffer | undefined =
-        await BackgroundWorker.encodePng(buffer, width, height, info.pixelFormat);
+        await BackgroundWorker.encodePng(area.pixels, width, height);
       if (png === undefined || png.byteLength === 0) {
         this.message(ClipboardText.pasteFailed(ClipboardText.IMAGE));
         return;

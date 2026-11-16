@@ -346,8 +346,7 @@ export class RdpClipboardBridge implements ClipboardBridge {
           hilog.warn(DOMAIN, TAG, 'unsupported remote DIB');
           return;
         }
-        this.setRemotePixelMap(parsed.bgra, parsed.width, parsed.height,
-          image.PixelMapFormat.BGRA_8888);
+        this.setRemotePixelMap(parsed.bgra, parsed.width, parsed.height);
       })
       .catch((error: BusinessError): void => {
         hilog.warn(DOMAIN, TAG, 'decode dib failed: %{public}s', JSON.stringify(error));
@@ -369,19 +368,20 @@ export class RdpClipboardBridge implements ClipboardBridge {
           hilog.warn(DOMAIN, TAG, 'unsupported remote PNG');
           return;
         }
-        this.setRemotePixelMap(decoded.bgra, decoded.width, decoded.height,
-          RdpClipboardBridge.toPixelFormat(decoded.pixelFormat));
+        this.setRemotePixelMap(decoded.bgra, decoded.width, decoded.height);
       })
       .catch((error: BusinessError): void => {
         hilog.warn(DOMAIN, TAG, 'decode png failed: %{public}s', JSON.stringify(error));
       });
   }
 
-  private setRemotePixelMap(bgra: ArrayBuffer, width: number, height: number,
-    format: image.PixelMapFormat): void {
+  // `bgra` is BGRA_8888; the local clipboard gets the platform-default
+  // RGBA_8888 PixelMap (consumers such as WPS reject a BGRA_8888 one).
+  private setRemotePixelMap(bgra: ArrayBuffer, width: number, height: number): void {
     const options: image.InitializationOptions = {
       editable: false,
-      pixelFormat: format,
+      srcPixelFormat: image.PixelMapFormat.BGRA_8888,
+      pixelFormat: image.PixelMapFormat.RGBA_8888,
       size: { width: width, height: height }
     };
     try {
@@ -485,8 +485,8 @@ export class RdpClipboardBridge implements ClipboardBridge {
     return 99;
   }
 
-  // The pixel read is a PixelMap API (UI thread); CF_DIB + PNG encode and the
-  // native push run on the worker.
+  // The pasteboard PixelMap is read as BGRA_8888 (the area API normalizes any
+  // source format); CF_DIB + PNG encode and the native push run on the worker.
   private pushImage(pixelMap: image.PixelMap): void {
     pixelMap.getImageInfo()
       .then((info: image.ImageInfo): void => {
@@ -496,15 +496,18 @@ export class RdpClipboardBridge implements ClipboardBridge {
           this.message(ClipboardText.LOCAL_EMPTY);
           return;
         }
-        const buffer: ArrayBuffer = new ArrayBuffer(width * height * 4);
-        pixelMap.readPixelsToBuffer(buffer)
+        const area: image.PositionArea = {
+          pixels: new ArrayBuffer(width * height * 4),
+          offset: 0,
+          stride: width * 4,
+          region: { size: { width: width, height: height }, x: 0, y: 0 }
+        };
+        pixelMap.readPixels(area)
           .then((): void => {
-            BackgroundWorker.pushImage(this.native.handleId(), buffer, width, height,
-              info.pixelFormat)
+            BackgroundWorker.pushImage(this.native.handleId(), area.pixels, width, height)
               .then((pushed: boolean): void => {
                 if (!pushed) {
-                  hilog.warn(DOMAIN, TAG, 'unsupported clipboard pixel format or dead session: %{public}d',
-                    info.pixelFormat);
+                  hilog.warn(DOMAIN, TAG, 'clipboard image push failed (dead session?)');
                   this.message(ClipboardText.pasteFailed(ClipboardText.IMAGE));
                   return;
                 }
@@ -578,31 +581,6 @@ export class RdpClipboardBridge implements ClipboardBridge {
     } catch (error) {
       return 0;
     }
-  }
-
-  private static toPixelFormat(value: number): image.PixelMapFormat {
-    if (value === image.PixelMapFormat.RGB_565) {
-      return image.PixelMapFormat.RGB_565;
-    }
-    if (value === image.PixelMapFormat.RGBA_8888) {
-      return image.PixelMapFormat.RGBA_8888;
-    }
-    if (value === image.PixelMapFormat.RGB_888) {
-      return image.PixelMapFormat.RGB_888;
-    }
-    if (value === image.PixelMapFormat.ALPHA_8) {
-      return image.PixelMapFormat.ALPHA_8;
-    }
-    if (value === image.PixelMapFormat.RGBA_F16) {
-      return image.PixelMapFormat.RGBA_F16;
-    }
-    if (value === image.PixelMapFormat.NV21) {
-      return image.PixelMapFormat.NV21;
-    }
-    if (value === image.PixelMapFormat.NV12) {
-      return image.PixelMapFormat.NV12;
-    }
-    return image.PixelMapFormat.BGRA_8888;
   }
 
   private notifyRemote(): void {

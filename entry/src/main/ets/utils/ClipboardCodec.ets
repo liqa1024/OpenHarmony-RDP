@@ -5,11 +5,6 @@ import { DecodedText, TextEncoding } from './TextEncoding';
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpClipCodec';
 
-const PIXEL_FORMAT_ARGB_8888: number = 1;
-const PIXEL_FORMAT_RGBA_8888: number = 3;
-const PIXEL_FORMAT_BGRA_8888: number = 4;
-const PIXEL_FORMAT_RGB_888: number = 5;
-
 const BYTE_SPACE: number = 0x20;
 const BYTE_GT: number = 0x3E;
 
@@ -281,46 +276,17 @@ function parseRtfColorTable(bytes: Uint8Array): string[] {
 }
 
 export class ClipboardCodec {
-  static buildDib(pixels: ArrayBuffer, width: number, height: number,
-    pixelFormat: number): ArrayBuffer | undefined {
+  // `pixels` must be BGRA_8888 (readPixels / parseDib output); CF_DIB 32bpp
+  // BI_RGB is bottom-up BGRA.
+  static buildDib(pixels: ArrayBuffer, width: number, height: number): ArrayBuffer | undefined {
     if (width <= 0 || height <= 0) {
       return undefined;
     }
-    const count: number = width * height;
-    const src: Uint8Array = new Uint8Array(pixels);
-    const bgra: Uint8Array = new Uint8Array(count * 4);
-    if (pixelFormat === PIXEL_FORMAT_RGBA_8888) {
-      if (src.byteLength < count * 4) {
-        return undefined;
-      }
-      for (let i = 0; i < count; i++) {
-        const s: number = i * 4;
-        bgra[s] = src[s + 2];
-        bgra[s + 1] = src[s + 1];
-        bgra[s + 2] = src[s];
-        bgra[s + 3] = src[s + 3];
-      }
-    } else if (pixelFormat === PIXEL_FORMAT_ARGB_8888
-      || pixelFormat === PIXEL_FORMAT_BGRA_8888) {
-      if (src.byteLength < count * 4) {
-        return undefined;
-      }
-      bgra.set(src.subarray(0, count * 4));
-    } else if (pixelFormat === PIXEL_FORMAT_RGB_888) {
-      if (src.byteLength < count * 3) {
-        return undefined;
-      }
-      for (let i = 0; i < count; i++) {
-        const s: number = i * 3;
-        bgra[i * 4] = src[s + 2];
-        bgra[i * 4 + 1] = src[s + 1];
-        bgra[i * 4 + 2] = src[s];
-        bgra[i * 4 + 3] = 255;
-      }
-    } else {
+    const stride: number = width * 4;
+    if (pixels.byteLength < stride * height) {
       return undefined;
     }
-    const stride: number = width * 4;
+    const src: Uint8Array = new Uint8Array(pixels);
     const dib: ArrayBuffer = new ArrayBuffer(40 + stride * height);
     const header: DataView = new DataView(dib);
     header.setUint32(0, 40, true);
@@ -333,7 +299,7 @@ export class ClipboardCodec {
     const out: Uint8Array = new Uint8Array(dib);
     for (let y = 0; y < height; y++) {
       const rowStart: number = (height - 1 - y) * stride;
-      out.set(bgra.subarray(rowStart, rowStart + stride), 40 + y * stride);
+      out.set(src.subarray(rowStart, rowStart + stride), 40 + y * stride);
     }
     return dib;
   }

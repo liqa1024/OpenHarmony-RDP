@@ -125,3 +125,13 @@ kind 并在响应上回带，另发一个 `RemoteFormatResponse`（无论成功/
   层按需合成的，`EnumClipboardFormats` 枚举**不会触发**合成），故客户端自带 RTF→HTML 转换。
   注意 `\colortbl` 索引约定：第一个 `;` 是索引 0（auto），之后每个 `;` 递增，解析时**不要预置空条目**，
   否则 `\cfN` 整体错位、颜色丢失。
+- **PixelMap 的像素格式必须显式声明，且本机↔远端图片只走 BGRA_8888 这一条口径**（图片色偏与「某个应用拒收」的根因）：
+  - **读像素只用 `readPixels(area)`**（`PositionArea` 明确规定只支持 BGRA_8888，是唯一「读出来必定 BGRA」的读法）。
+    不要用 `readPixelsToBuffer` + `getImageInfo().pixelFormat` 去猜缓冲区的格式：`createPixelMapSync` 的
+    **`srcPixelFormat` 缺省是 BGRA_8888**，只填 `pixelFormat` 就成了「按 BGRA 解释输入、按声明标记输出」，
+    表现为**蓝红对调**——这正是本机→远端图片色偏的根因（PNG 与 CF_DIB 同源，都会错）。
+  - **写本机剪贴板的 PixelMap 必须是 RGBA_8888**：`srcPixelFormat: BGRA_8888` + `pixelFormat: RGBA_8888`
+    （平台默认产物、解码器 `desiredPixelFormat` 缺省都是 RGBA_8888，`createPixelMapSync` 的 `pixelFormat`
+    越权声明成 BGRA_8888 会被部分消费方（WPS）拒收；而网页侧自己转 PNG 仍然正确，只测网页工具查不出来）。
+  - **CF_DIB 是 32bpp BI_RGB、自底向上、内存序即 BGRA**，与读出的 BGRA 同序，故 `buildDib` 只翻行不做通道交换；
+    `parseDib` 反过来也只产 BGRA。
